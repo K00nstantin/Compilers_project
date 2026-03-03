@@ -5,7 +5,6 @@ import (
 	"log"
 
 	"github.com/K00nstantin/Compilers_project/internal/parser"
-	"github.com/antlr4-go/antlr"
 	"github.com/antlr4-go/antlr/v4"
 )
 
