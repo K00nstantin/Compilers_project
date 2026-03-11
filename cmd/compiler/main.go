@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	input, err := antlr.NewFileStream("test.minijava")
+	input, err := antlr.NewFileStream("/home/konstantin/go/Compilers_project/cmd/compiler/test.minijava")
 	if err != nil {
 		log.Fatalf("Error while reading")
 	}
