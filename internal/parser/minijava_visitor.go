@@ -3,12 +3,6 @@
 package parser // MiniJava
 import "github.com/antlr4-go/antlr/v4"
 
-
-
-
-    package mini_java.antlr;
-
-
 // A complete Visitor for a parse tree produced by MiniJavaParser.
 type MiniJavaVisitor interface {
 	antlr.ParseTreeVisitor
@@ -144,5 +138,4 @@ type MiniJavaVisitor interface {
 
 	// Visit a parse tree produced by MiniJavaParser#intType.
 	VisitIntType(ctx *IntTypeContext) interface{}
-
 }

@@ -1,4 +1,4 @@
-module Compilers_project
+module github.com/K00nstantin/Compilers_project
 
 go 1.22.2
 

@@ -2,10 +2,6 @@
 
 grammar MiniJava;
 
-@header {
-    package mini_java.antlr;
-}
-
 goal
     :   mainClassDeclaration
         classDeclaration*
@@ -51,13 +47,9 @@ methodDeclaration
     :   ( 'public' type ID formalParameters
         /* illegal method declarations */
         |          type ID formalParameters
-            {notifyErrorListeners("method declaration without public");}
         | 'public'      ID formalParameters
-            {notifyErrorListeners("method declaration without return type");}
         | 'public' type    formalParameters
-            {notifyErrorListeners("method declaration without method name");}
         | 'public' type ID
-            {notifyErrorListeners("method declaration without argument list");}
         )
         methodBody
     ;
