@@ -1,15 +1,6 @@
-class Conditional {
+class Simple {
     public static void main(String[] args) {
         int x;
         int y;
-        boolean flag;
-        x = 5;
-        y = 10;
-        flag = x < y && true;
-        if (flag) {
-            System.out.println(100);
-        } else {
-            System.out.println(200);
-        }
     }
 }
