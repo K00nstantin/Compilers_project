@@ -32,8 +32,6 @@ func NewMyListener(ruleNames []string) *MyListener {
 }
 
 func (l *MyListener) EnterEveryRule(ctx antlr.ParserRuleContext) {
-	idx := ctx.GetRuleIndex()
-	if idx >= 0 && int(idx) < len(l.ruleNames) {
-		fmt.Printf("Enter %s (%T): %s\n", l.ruleNames[idx], ctx, ctx.GetText())
-	}
+	fmt.Printf("Enter rule, context type: %T\n", ctx)
+	fmt.Printf("Text: %q\n", ctx.GetText())
 }

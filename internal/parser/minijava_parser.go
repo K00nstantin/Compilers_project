@@ -1,4 +1,4 @@
-// Code generated from grammar/MiniJava.g4 by ANTLR 4.13.2. DO NOT EDIT.
+// Code generated from /home/konstantin/go/Compilers_project/grammar/MiniJava.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
 package parser // MiniJava
 import (
