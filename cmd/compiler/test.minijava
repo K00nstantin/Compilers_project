@@ -1,6 +1,5 @@
 class Simple {
     public static void main(String[] args) {
-        int x;
-        int y;
+        System.out.println(42);
     }
 }

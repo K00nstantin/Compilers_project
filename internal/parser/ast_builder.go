@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/K00nstantin/Compilers_project/internal/ast"
+	"github.com/antlr4-go/antlr/v4"
 )
 
 type ASTBuilder struct {
@@ -12,8 +13,28 @@ type ASTBuilder struct {
 
 func NewASTBuilder() *ASTBuilder {
 	return &ASTBuilder{
-		BaseMiniJavaVisitor: &BaseMiniJavaVisitor{},
+		BaseMiniJavaVisitor: &BaseMiniJavaVisitor{BaseParseTreeVisitor: &antlr.BaseParseTreeVisitor{}},
 	}
+}
+
+func (v *ASTBuilder) Visit(tree antlr.ParseTree) interface{} {
+	if tree == nil {
+		return nil
+	}
+	return tree.Accept(v)
+}
+
+func (v *ASTBuilder) VisitChildren(node antlr.RuleNode) interface{} {
+	if node == nil {
+		return nil
+	}
+	var result interface{}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if child, ok := node.GetChild(i).(antlr.ParseTree); ok && child != nil {
+			result = child.Accept(v)
+		}
+	}
+	return result
 }
 
 func (v *ASTBuilder) VisitGoal(ctx *GoalContext) interface{} {
@@ -93,9 +114,11 @@ func (v *ASTBuilder) VisitMethodDeclaration(ctx *MethodDeclarationContext) inter
 	name := ctx.ID().GetText()
 	params := []*ast.VarDecl{}
 	if ctx.FormalParameters() != nil {
-		for _, param := range ctx.FormalParameters().FormalParameterList().AllFormalParameter() {
-			p := v.Visit(param).(*ast.VarDecl)
-			params = append(params, p)
+		if plist := ctx.FormalParameters().FormalParameterList(); plist != nil {
+			for _, param := range plist.AllFormalParameter() {
+				p := v.Visit(param).(*ast.VarDecl)
+				params = append(params, p)
+			}
 		}
 	}
 
@@ -136,29 +159,6 @@ func (v *ASTBuilder) VisitVarDeclaration(ctx *VarDeclarationContext) interface{}
 	return &ast.VarDecl{
 		Type: tp,
 		Name: name,
-	}
-}
-
-func (v *ASTBuilder) VisitStatement(ctx *StatementContext) interface{} {
-	switch t := interface{}(ctx).(type) {
-	case *NestedStatementContext:
-		return v.VisitNestedStatement(t)
-	case *IfElseStatementContext:
-		return v.VisitIfElseStatement(t)
-	case *WhileStatementContext:
-		return v.VisitWhileStatement(t)
-	case *PrintStatementContext:
-		return v.VisitPrintStatement(t)
-	case *AssignStatementContext:
-		return v.VisitAssignStatement(t)
-	case *ArrayAssignStatementContext:
-		return v.VisitArrayAssignStatement(t)
-	case *ReturnStatementContext:
-		return v.VisitReturnStatement(t)
-	case *RecurStatementContext:
-		return v.VisitRecurStatement(t)
-	default:
-		return nil
 	}
 }
 
@@ -230,9 +230,11 @@ func (v *ASTBuilder) VisitReturnStatement(ctx *ReturnStatementContext) interface
 func (v *ASTBuilder) VisitRecurStatement(ctx *RecurStatementContext) interface{} {
 	cond := v.Visit(ctx.Expression(0)).(ast.Expression)
 	args := []ast.Expression{}
-	for _, arg := range ctx.AllExpression() {
-		a := v.Visit(arg).(ast.Expression)
-		args = append(args, a)
+	if mal := ctx.MethodArgumentList(); mal != nil {
+		for _, arg := range mal.AllExpression() {
+			a := v.Visit(arg).(ast.Expression)
+			args = append(args, a)
+		}
 	}
 
 	elseexpr := v.Visit(ctx.Expression(1)).(ast.Expression)
@@ -240,47 +242,6 @@ func (v *ASTBuilder) VisitRecurStatement(ctx *RecurStatementContext) interface{}
 		Cond: cond,
 		Args: args,
 		Else: elseexpr,
-	}
-}
-
-func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
-	switch t := interface{}(ctx).(type) {
-	case *ArrayAccessExpressionContext:
-		return v.VisitArrayAccessExpression(t)
-	case *ArrayLengthExpressionContext:
-		return v.VisitArrayLengthExpression(t)
-	case *MethodCallExpressionContext:
-		return v.VisitMethodCallExpression(t)
-	case *NegExpressionContext:
-		return v.VisitNegExpression(t)
-	case *NotExpressionContext:
-		return v.VisitNotExpression(t)
-	case *ArrayInstantiationExpressionContext:
-		return v.VisitArrayInstantiationExpression(t)
-	case *ObjectInstantiationExpressionContext:
-		return v.VisitObjectInstantiationExpression(t)
-	case *AddExpressionContext:
-		return v.VisitAddExpression(t)
-	case *SubExpressionContext:
-		return v.VisitSubExpression(t)
-	case *MulExpressionContext:
-		return v.VisitMulExpression(t)
-	case *LtExpressionContext:
-		return v.VisitLtExpression(t)
-	case *AndExpressionContext:
-		return v.VisitAndExpression(t)
-	case *IntLitExpressionContext:
-		return v.VisitIntLitExpression(t)
-	case *BooleanLitExpressionContext:
-		return v.VisitBooleanLitExpression(t)
-	case *IdentifierExpressionContext:
-		return v.VisitIdentifierExpression(t)
-	case *ThisExpressionContext:
-		return v.VisitThisExpression(t)
-	case *ParenExpressionContext:
-		return v.VisitParenExpression(t)
-	default:
-		return nil
 	}
 }
 
