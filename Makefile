@@ -1,6 +1,6 @@
 ANTLR_JAR = /usr/local/lib/antlr-4.13.2-complete.jar
 
-GRAMMAR = $(abspath grammar/MiniJava.g4)
+GRAMMAR = $(abspath grammar/oberon.g4)
 
 OUTPUT_DIR = internal/parser
 
