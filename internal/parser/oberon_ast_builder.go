@@ -162,3 +162,45 @@ func (v *ASTBuilder) VisitProcedureBody(ctx *ProcedureBodyContext) interface{} {
 	}
 	return proc
 }
+
+func (v *ASTBuilder) VisitFormalParameters(ctx *FormalParametersContext) interface{} {
+	sign := &ast.ProcedureSignature{}
+	for _, ps := range ctx.AllFPSection() {
+		fps := v.Visit(ps).(*ast.ParamSection)
+		sign.Params = append(sign.Params, fps)
+	}
+	if rt := ctx.Qualident(); rt != nil {
+		sign.ReturnType = v.qualidentText(rt)
+	}
+	return sign
+}
+
+func (v *ASTBuilder) VisitFPSection(ctx *FPSectionContext) interface{} {
+	section := &ast.ParamSection{ByRef: ctx.VAR() != nil}
+	for _, id := range ctx.AllIdent() {
+		section.Names = append(section.Names, id.GetText())
+	}
+	if ft := ctx.FormalType(); ft != nil {
+		section.Type = ft.GetText()
+	}
+	return section
+}
+
+func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
+	ids := ctx.AllIdent()
+	if len(ids) == 1 {
+		return ast.QualIdent{Name: ids[0].GetText()}
+	}
+	if len(ids) >= 2 {
+		return ast.QualIdent{Module: ids[0].GetText(), Name: ids[1].GetText()}
+	}
+	return ast.QualIdent{}
+}
+
+func (v *ASTBuilder) qualidentText(ctx IQualidentContext) string {
+	q := v.qualident(ctx)
+	if q.Module == "" {
+		return q.Name
+	}
+	return q.Module + "." + q.Name
+}
