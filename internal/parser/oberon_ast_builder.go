@@ -297,6 +297,28 @@ func (v *ASTBuilder) VisitAssignment(ctx *AssignmentContext) interface{} {
 	return &ast.AssignmentStmt{Target: v.Visit(ctx.Designator()).(*ast.DesignatorExpr), Value: v.Visit(ctx.Expression()).(ast.Expr)}
 }
 
+func (v *ASTBuilder) VisitProcedureCall(ctx *ProcedureCallContext) interface{} {
+	call := &ast.CallExpr{}
+	call.Callee = v.Visit(ctx.Designator()).(ast.Expr)
+	if params := ctx.ActualParameters(); params != nil {
+		call.Args = v.Visit(params).([]ast.Expr)
+	}
+	return &ast.ProcedureCallStmt{Call: call}
+}
+
+func (v *ASTBuilder) VisitIfStatement(ctx *IfStatementContext) interface{} {
+	exprs := ctx.AllExpression()
+	seqs := ctx.AllStatementSequence()
+	stmt := &ast.IfStmt{}
+	for i := 0; i < len(exprs) && i < len(seqs); i++ {
+		stmt.Branches = append(stmt.Branches, &ast.IfBranch{Cond: v.Visit(exprs[i]).(ast.Expr), Body: v.Visit(seqs[i]).([]ast.Stmt)})
+	}
+	if len(seqs) > len(exprs) {
+		stmt.ElseBody = v.Visit(seqs[len(seqs)-1]).([]ast.Stmt)
+	}
+	return stmt
+}
+
 /////////////////////////////////////////////////////////////////////////
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
