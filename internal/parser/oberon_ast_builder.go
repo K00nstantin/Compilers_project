@@ -249,6 +249,54 @@ func (v *ASTBuilder) VisitProcedureType(ctx *ProcedureTypeContext) interface{} {
 	return proc
 }
 
+func (v *ASTBuilder) VisitIdentList(ctx *IdentListContext) interface{} {
+	list := make([]ast.IdentDef, 0, len(ctx.AllIdentdef()))
+	for _, i := range ctx.AllIdentdef() {
+		list = append(list, v.Visit(i).(ast.IdentDef))
+	}
+	return list
+}
+
+func (v *ASTBuilder) VisitIdentDef(ctx *IdentdefContext) interface{} {
+	return &ast.IdentDef{Name: ctx.Ident().GetText(), Exported: ctx.GetChildCount() > 1}
+}
+
+func (v *ASTBuilder) VisitStatementSequence(ctx *StatementSequenceContext) interface{} {
+	ss := make([]ast.Stmt, 0, len(ctx.AllStatement()))
+	for _, s := range ctx.AllStatement() {
+		ts := v.Visit(s)
+		if ts != nil {
+			ss = append(ss, ts.(ast.Stmt))
+		}
+	}
+	return ss
+}
+
+func (v *ASTBuilder) VisitStatement(ctx *StatementContext) interface{} {
+	switch {
+	case ctx.Assignment() != nil:
+		return v.Visit(ctx.Assignment())
+	case ctx.ProcedureCall() != nil:
+		return v.Visit(ctx.ProcedureCall())
+	case ctx.IfStatement() != nil:
+		return v.Visit(ctx.IfStatement())
+	case ctx.CaseStatement() != nil:
+		return v.Visit(ctx.CaseStatement())
+	case ctx.WhileStatement() != nil:
+		return v.Visit(ctx.WhileStatement())
+	case ctx.RepeatStatement() != nil:
+		return v.Visit(ctx.RepeatStatement())
+	case ctx.ForStatement() != nil:
+		return v.Visit(ctx.ForStatement())
+	default:
+		return nil
+	}
+}
+
+func (v *ASTBuilder) VisitAssignment(ctx *AssignmentContext) interface{} {
+	return &ast.AssignmentStmt{Target: v.Visit(ctx.Designator()).(*ast.DesignatorExpr), Value: v.Visit(ctx.Expression()).(ast.Expr)}
+}
+
 /////////////////////////////////////////////////////////////////////////
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
