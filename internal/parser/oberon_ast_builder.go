@@ -186,6 +186,71 @@ func (v *ASTBuilder) VisitFPSection(ctx *FPSectionContext) interface{} {
 	return section
 }
 
+func (v *ASTBuilder) VisitType_(ctx *Type_Context) interface{} {
+	switch {
+	case ctx.Qualident() != nil:
+		return &ast.NamedType{Name: v.qualidentText(ctx.Qualident())}
+	case ctx.ArrayType() != nil:
+		return v.Visit(ctx.ArrayType())
+	case ctx.RecordType() != nil:
+		return v.Visit(ctx.RecordType())
+	case ctx.PointerType() != nil:
+		return v.Visit(ctx.PointerType())
+	case ctx.ProcedureType() != nil:
+		return v.Visit(ctx.ProcedureType())
+	default:
+		panic("type")
+	}
+}
+
+func (v *ASTBuilder) VisitArrayType(ctx *ArrayTypeContext) interface{} {
+	a := &ast.ArrayType{}
+	for _, l := range ctx.AllLength() {
+		a.Lengths = append(a.Lengths, v.Visit(l).(ast.Expr))
+	}
+	a.Elem = v.Visit(ctx.Type_()).(ast.TypeExpr)
+	return a
+}
+
+func (v *ASTBuilder) VisitLength(ctx *LengthContext) interface{} {
+	return v.Visit(ctx.ConstExpression())
+}
+
+func (v *ASTBuilder) VisitRecordType(ctx *RecordTypeContext) interface{} {
+	r := &ast.RecordType{}
+	base := ctx.BaseType()
+	if base != nil && base.Qualident() != nil {
+		r.Base = v.qualidentText(base.Qualident())
+	}
+	fls := ctx.FieldListSequence()
+	if fls != nil {
+		for _, f := range fls.AllFieldList() {
+			r.Fields = append(r.Fields, v.Visit(f).(*ast.FieldDecl))
+		}
+	}
+	return r
+}
+
+func (v *ASTBuilder) VisitFieldList(ctx *FieldListContext) interface{} {
+	return &ast.FieldDecl{Names: v.Visit(ctx.IdentList()).([]ast.IdentDef), Type: v.Visit(ctx.Type_()).(ast.TypeExpr)}
+}
+
+func (v *ASTBuilder) VisitPointerType(ctx *PointerTypeContext) interface{} {
+	return &ast.PointerType{Target: v.Visit(ctx.Type_()).(ast.TypeExpr)}
+}
+
+func (v *ASTBuilder) VisitProcedureType(ctx *ProcedureTypeContext) interface{} {
+	proc := &ast.ProcedureType{}
+	sig := ctx.FormalParameters()
+	if sig != nil {
+		proc.Signature = v.Visit(sig).(*ast.ProcedureSignature)
+	}
+
+	return proc
+}
+
+/////////////////////////////////////////////////////////////////////////
+
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
 	ids := ctx.AllIdent()
 	if len(ids) == 1 {
