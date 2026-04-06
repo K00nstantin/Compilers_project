@@ -364,6 +364,63 @@ func (v *ASTBuilder) VisitLabel(ctx *LabelContext) interface{} {
 	return &ast.NumberExpr{Text: ctx.GetText()}
 }
 
+func (v *ASTBuilder) VisitWhileStatement(ctx *WhileStatementContext) interface{} {
+	w := &ast.WhileStmt{}
+	exprs := ctx.AllExpression()
+	seqs := ctx.AllStatementSequence()
+	for i := 0; i < len(exprs) && i < len(seqs); i++ {
+		w.Branches = append(w.Branches, &ast.IfBranch{Cond: v.Visit(exprs[i]).(ast.Expr), Body: v.Visit(seqs[i]).([]ast.Stmt)})
+	}
+	return w
+}
+
+func (v *ASTBuilder) VisitRepeatStatement(ctx *RepeatStatementContext) interface{} {
+	return &ast.RepeatStmt{Body: v.Visit(ctx.StatementSequence()).([]ast.Stmt), Until: v.Visit(ctx.Expression()).(ast.Expr)}
+}
+
+func (v *ASTBuilder) VisitForStatement(ctx *ForStatementContext) interface{} {
+	f := &ast.ForStmt{}
+	f.Var = ctx.Ident().GetText()
+	exprs := ctx.AllExpression()
+	f.From = v.Visit(exprs[0]).(ast.Expr)
+	f.To = v.Visit(exprs[1]).(ast.Expr)
+	f.Body = v.Visit(ctx.StatementSequence()).([]ast.Stmt)
+	if by := ctx.ConstExpression(); by != nil {
+		f.By = v.Visit(ctx.ConstExpression()).(ast.Expr)
+		f.HasBy = true
+	}
+	return f
+}
+
+func (v *ASTBuilder) VisitActualParameters(ctx *ActualParametersContext) interface{} {
+	if ctx.ExpList() != nil {
+		return v.Visit(ctx.ExpList())
+	}
+	return []ast.Expr{}
+}
+
+func (v *ASTBuilder) VisitExpList(ctx *ExpListContext) interface{} {
+	list := make([]ast.Expr, 0, len(ctx.AllExpression()))
+	for _, e := range ctx.AllExpression() {
+		list = append(list, v.Visit(e).(ast.Expr))
+	}
+	return list
+}
+
+func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
+	all := ctx.AllSimpleExpression()
+	if len(all) == 0 {
+		return nil
+	}
+	left := v.Visit(all[0]).(ast.Expr)
+	if ctx.Relation() == nil && len(all) < 2 {
+		return left
+	}
+	right := v.Visit(all[1]).(ast.Expr)
+	rel := ctx.Relation().GetText()
+	return &ast.BinaryExpr{Left: left, Op: rel, Right: right}
+}
+
 /////////////////////////////////////////////////////////////////////////
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
