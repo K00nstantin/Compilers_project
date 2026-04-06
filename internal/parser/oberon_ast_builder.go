@@ -319,6 +319,51 @@ func (v *ASTBuilder) VisitIfStatement(ctx *IfStatementContext) interface{} {
 	return stmt
 }
 
+func (v *ASTBuilder) VisitCaseStatement(ctx *CaseStatementContext) interface{} {
+	c := &ast.CaseStmt{Expr: v.Visit(ctx.Expression()).(ast.Expr)}
+	for _, cc := range ctx.AllCase_() {
+		c.Branches = append(c.Branches, v.Visit(cc).(*ast.CaseBranch))
+	}
+	return c
+}
+
+func (v *ASTBuilder) VisitCase_(ctx *Case_Context) interface{} {
+	c := &ast.CaseBranch{}
+	if ll := ctx.CaseLabelList(); ll != nil {
+		c.Labels = v.Visit(ll).([]*ast.CaseLabel)
+	}
+	if ss := ctx.StatementSequence(); ss != nil {
+		c.Body = v.Visit(ss).([]ast.Stmt)
+	}
+	return c
+}
+
+func (v *ASTBuilder) VisitCaseLabelList(ctx *CaseLabelListContext) interface{} {
+	out := make([]*ast.CaseLabel, 0, len(ctx.AllLabelRange()))
+	for _, lr := range ctx.AllLabelRange() {
+		out = append(out, v.Visit(lr).(*ast.CaseLabel))
+	}
+	return out
+}
+
+func (v *ASTBuilder) VisitLabelRange(ctx *LabelRangeContext) interface{} {
+	lr := &ast.CaseLabel{}
+	all := ctx.AllLabel()
+	if len(all) == 0 {
+		return nil
+	}
+	lr.From = v.Visit(all[0]).(ast.Expr)
+	lr.To = lr.From
+	if len(all) > 1 {
+		lr.To = v.Visit(all[1]).(ast.Expr)
+	}
+	return lr
+}
+
+func (v *ASTBuilder) VisitLabel(ctx *LabelContext) interface{} {
+	return &ast.NumberExpr{Text: ctx.GetText()}
+}
+
 /////////////////////////////////////////////////////////////////////////
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
