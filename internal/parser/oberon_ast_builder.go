@@ -421,6 +421,25 @@ func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
 	return &ast.BinaryExpr{Left: left, Op: rel, Right: right}
 }
 
+func (v *ASTBuilder) VisitSimpleExpression(ctx *SimpleExpressionContext) interface{} {
+	allterm := ctx.AllTerm()
+	expr := v.Visit(allterm[0]).(ast.Expr)
+	if fc, ok := allterm[0].GetChild(0).(antlr.TerminalNode); ok {
+		if op := fc.GetText(); op == "+" || op == "-" {
+			expr = &ast.UnaryExpr{Op: op, Expr: expr}
+		}
+	}
+	for i, op := range ctx.AllAddOperator() {
+		if i+1 >= len(allterm) {
+			break
+		}
+		op := op.GetText()
+		right := v.Visit(allterm[i+1]).(ast.Expr)
+		expr = &ast.BinaryExpr{Left: expr, Op: op, Right: right}
+	}
+	return expr
+}
+
 /////////////////////////////////////////////////////////////////////////
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
