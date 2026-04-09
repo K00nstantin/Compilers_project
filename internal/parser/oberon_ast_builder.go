@@ -440,7 +440,91 @@ func (v *ASTBuilder) VisitSimpleExpression(ctx *SimpleExpressionContext) interfa
 	return expr
 }
 
-/////////////////////////////////////////////////////////////////////////
+func (v *ASTBuilder) VisitTerm(ctx *TermContext) interface{} {
+	af := ctx.AllFactor()
+	if len(af) == 0 {
+		return nil
+	}
+	expr := v.Visit(af[0]).(ast.Expr)
+	for i, op := range ctx.AllMulOperator() {
+		if i+1 >= len(af) {
+			break
+		}
+		expr = &ast.BinaryExpr{Left: expr, Op: op.GetText(), Right: v.Visit(af[i+1]).(ast.Expr)}
+	}
+	return expr
+}
+
+func (v *ASTBuilder) VisitFactor(ctx *FactorContext) interface{} {
+	switch {
+	case ctx.Number() != nil:
+		return &ast.NumberExpr{Text: ctx.Number().GetText()}
+	case ctx.STRING() != nil:
+		return &ast.StringExpr{Value: ctx.STRING().GetText()}
+	case ctx.NIL() != nil:
+		return &ast.NilExpr{}
+	case ctx.TRUE() != nil:
+		return &ast.BoolExpr{Value: true}
+	case ctx.FALSE() != nil:
+		return &ast.BoolExpr{Value: false}
+	case ctx.Set_() != nil:
+		return v.Visit(ctx.Set_())
+	case ctx.Designator() != nil:
+		base := v.Visit(ctx.Designator()).(ast.Expr)
+		if ap := ctx.ActualParameters(); ap != nil {
+			return &ast.CallExpr{Callee: base, Args: v.Visit(ap).([]ast.Expr)}
+		}
+		return base
+	case ctx.Expression() != nil:
+		return v.Visit(ctx.Expression())
+	case ctx.Factor() != nil:
+		return &ast.UnaryExpr{Op: "~", Expr: v.Visit(ctx.Factor()).(ast.Expr)}
+	default:
+		panic("factor")
+	}
+}
+
+func (v *ASTBuilder) VisitSet_(ctx *Set_Context) interface{} {
+	elems := &ast.SetExpr{}
+	for _, elem := range ctx.AllElement() {
+		elems.Elements = append(elems.Elements, v.Visit(elem).(*ast.SetElement))
+	}
+	return elems
+}
+
+func (v *ASTBuilder) VisitElement(ctx *ElementContext) interface{} {
+	exprs := ctx.AllExpression()
+	if len(exprs) == 0 {
+		return nil
+	}
+	from := v.Visit(exprs[0]).(ast.Expr)
+	to := from
+	if len(exprs) > 1 {
+		to = v.Visit(exprs[1]).(ast.Expr)
+	}
+	return &ast.SetElement{From: from, To: to}
+}
+
+func (v *ASTBuilder) VisitDesignator(ctx *DesignatorContext) interface{} {
+	des := &ast.DesignatorExpr{Base: v.qualident(ctx.Qualident())}
+	for _, s := range ctx.AllSelector() {
+		des.Selectors = append(des.Selectors, v.Visit(s).(ast.Selector))
+	}
+	return des
+}
+
+func (v *ASTBuilder) VisitSelector(ctx *SelectorContext) interface{} {
+	switch {
+	case ctx.Ident() != nil:
+		return ast.Selector{Field: ctx.Ident().GetText()}
+	case ctx.ExpList() != nil:
+		return ast.Selector{Index: v.Visit(ctx.ExpList()).([]ast.Expr)}
+	case ctx.Qualident() != nil:
+		return ast.Selector{Type: v.qualidentText(ctx.Qualident())}
+	default:
+		return ast.Selector{Deref: true}
+	}
+}
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
 	ids := ctx.AllIdent()
