@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/K00nstantin/Compilers_project/internal/ast"
+	"github.com/K00nstantin/Compilers_project/internal/codegen"
 	"github.com/K00nstantin/Compilers_project/internal/parser"
 	"github.com/antlr4-go/antlr/v4"
 )
@@ -40,6 +42,15 @@ func main() {
 	fmt.Println("\n AST builder\n")
 	dumpModule(mod, "")
 
+	gen := codegen.NewGenerator(mod.Name)
+	llvmMod := gen.Generate(mod)
+
+	outFile := "output.ll"
+	err = os.WriteFile(outFile, []byte(llvmMod.String()), 0644)
+	if err != nil {
+		log.Fatalf("cannot write LLVM IR: %v", err)
+	}
+	fmt.Printf("\nLLVM IR written to %s\n", outFile)
 }
 
 func dumpModule(m *ast.Module, indent string) {
