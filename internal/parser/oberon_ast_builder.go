@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+
 	"github.com/K00nstantin/Compilers_project/internal/ast"
 	"github.com/antlr4-go/antlr/v4"
 )
@@ -95,43 +97,35 @@ func (v *ASTBuilder) VisitDeclarationSequence(ctx *DeclarationSequenceContext) i
 func (v *ASTBuilder) VisitConstDeclaration(ctx *ConstDeclarationContext) interface{} {
 	name := v.Visit(ctx.Identdef()).(ast.IdentDef)
 	value := v.Visit(ctx.ConstExpression()).(ast.Expr)
-
-	return &ast.ConstDecl{
-		Name:  name,
-		Value: value,
-	}
+	return &ast.ConstDecl{Name: name, Value: value}
 }
 
 func (v *ASTBuilder) VisitConstExpression(ctx *ConstExpressionContext) interface{} {
-	return v.Visit(ctx.Expression())
+	expr := v.Visit(ctx.Expression())
+	if expr == nil {
+		panic("const expression is nil")
+	}
+	return expr
 }
 
 func (v *ASTBuilder) VisitTypeDeclaration(ctx *TypeDeclarationContext) interface{} {
 	name := v.Visit(ctx.Identdef()).(ast.IdentDef)
 	tp := v.Visit(ctx.Type_()).(ast.TypeExpr)
-	return &ast.TypeDecl{
-		Name: name,
-		Type: tp,
-	}
+	return &ast.TypeDecl{Name: name, Type: tp}
 }
 
 func (v *ASTBuilder) VisitVariableDeclaration(ctx *VariableDeclarationContext) interface{} {
 	names := v.Visit(ctx.IdentList()).([]ast.IdentDef)
 	tp := v.Visit(ctx.Type_()).(ast.TypeExpr)
-	return &ast.VarDecl{
-		Names: names,
-		Type:  tp,
-	}
+	return &ast.VarDecl{Names: names, Type: tp}
 }
 
 func (v *ASTBuilder) VisitProcedureDeclaration(ctx *ProcedureDeclarationContext) interface{} {
 	head := v.Visit(ctx.ProcedureHeading()).(*ast.ProcedureDecl)
 	body := v.Visit(ctx.ProcedureBody()).(*ast.ProcedureDecl)
-	if body != nil {
-		head.Declarations = body.Declarations
-		head.Body = body.Body
-		head.ReturnExpr = body.ReturnExpr
-	}
+	head.Declarations = body.Declarations
+	head.Body = body.Body
+	head.ReturnExpr = body.ReturnExpr
 	if endName := ctx.Ident(); endName != nil {
 		head.EndName = endName.GetText()
 	}
@@ -140,12 +134,25 @@ func (v *ASTBuilder) VisitProcedureDeclaration(ctx *ProcedureDeclarationContext)
 
 func (v *ASTBuilder) VisitProcedureHeading(ctx *ProcedureHeadingContext) interface{} {
 	proc := &ast.ProcedureDecl{}
-	proc.Name = v.Visit(ctx.Identdef()).(ast.IdentDef)
-	fp, ok := v.Visit(ctx.FormalParameters()).(*ast.ProcedureSignature)
-	if ok && fp != nil {
-		proc.Signature = fp
+	if identdef := ctx.Identdef(); identdef != nil {
+		if ident := identdef.Ident(); ident != nil {
+			proc.Name = ast.IdentDef{
+				Name:     ident.GetText(),
+				Exported: identdef.GetChildCount() > 1,
+			}
+		} else {
+			proc.Name = ast.IdentDef{Name: "__error", Exported: false}
+		}
+	} else {
+		proc.Name = ast.IdentDef{Name: "__error", Exported: false}
 	}
-
+	if fp := ctx.FormalParameters(); fp != nil {
+		if val := v.Visit(fp); val != nil {
+			if sig, ok := val.(*ast.ProcedureSignature); ok {
+				proc.Signature = sig
+			}
+		}
+	}
 	return proc
 }
 
@@ -175,15 +182,37 @@ func (v *ASTBuilder) VisitFormalParameters(ctx *FormalParametersContext) interfa
 	return sign
 }
 
+// VisitFPSection обрабатывает секцию формальных параметров
 func (v *ASTBuilder) VisitFPSection(ctx *FPSectionContext) interface{} {
 	section := &ast.ParamSection{ByRef: ctx.VAR() != nil}
 	for _, id := range ctx.AllIdent() {
 		section.Names = append(section.Names, id.GetText())
 	}
 	if ft := ctx.FormalType(); ft != nil {
-		section.Type = ft.GetText()
+		// ft имеет интерфейсный тип IFormalTypeContext, приводим к конкретному
+		if formalTypeCtx, ok := ft.(*FormalTypeContext); ok {
+			section.Type = v.VisitFormalType(formalTypeCtx).(ast.TypeExpr)
+		} else {
+			panic(fmt.Sprintf("unexpected formal type context type: %T", ft))
+		}
 	}
 	return section
+}
+
+// VisitFormalType обрабатывает формальный тип (ARRAY OF ...)
+func (v *ASTBuilder) VisitFormalType(ctx *FormalTypeContext) interface{} {
+	// Если есть ARRAY, значит это открытый массив
+	if len(ctx.AllARRAY()) > 0 {
+		// Базовый тип - последний qualident
+		var result ast.TypeExpr = &ast.NamedType{Name: v.qualidentText(ctx.Qualident())}
+		// Создаём цепочку открытых массивов (каждый ARRAY OF даёт один уровень)
+		for i := 0; i < len(ctx.AllARRAY()); i++ {
+			result = &ast.ArrayType{Lengths: []ast.Expr{}, Elem: result}
+		}
+		return result
+	}
+	// Иначе это просто qualident
+	return &ast.NamedType{Name: v.qualidentText(ctx.Qualident())}
 }
 
 func (v *ASTBuilder) VisitType_(ctx *Type_Context) interface{} {
@@ -191,48 +220,114 @@ func (v *ASTBuilder) VisitType_(ctx *Type_Context) interface{} {
 	case ctx.Qualident() != nil:
 		return &ast.NamedType{Name: v.qualidentText(ctx.Qualident())}
 	case ctx.ArrayType() != nil:
-		return v.Visit(ctx.ArrayType())
+		arr := v.Visit(ctx.ArrayType())
+		if arr == nil {
+			panic("arrayType returned nil")
+		}
+		return arr
 	case ctx.RecordType() != nil:
-		return v.Visit(ctx.RecordType())
+		rec := v.Visit(ctx.RecordType())
+		if rec == nil {
+			panic("recordType returned nil")
+		}
+		return rec
 	case ctx.PointerType() != nil:
-		return v.Visit(ctx.PointerType())
+		ptr := v.Visit(ctx.PointerType())
+		if ptr == nil {
+			panic("pointerType returned nil")
+		}
+		return ptr
 	case ctx.ProcedureType() != nil:
-		return v.Visit(ctx.ProcedureType())
+		proc := v.Visit(ctx.ProcedureType())
+		if proc == nil {
+			panic("procedureType returned nil")
+		}
+		return proc
 	default:
-		panic("type")
+		panic(fmt.Sprintf("unknown type: %s", ctx.GetText()))
 	}
 }
 
 func (v *ASTBuilder) VisitArrayType(ctx *ArrayTypeContext) interface{} {
 	a := &ast.ArrayType{}
-	for _, l := range ctx.AllLength() {
-		a.Lengths = append(a.Lengths, v.Visit(l).(ast.Expr))
+	lengths := ctx.AllLength()
+	if len(lengths) == 0 {
+		panic("array type has no lengths")
 	}
-	a.Elem = v.Visit(ctx.Type_()).(ast.TypeExpr)
+	for _, l := range lengths {
+		lengthExpr := v.Visit(l)
+		if lengthExpr == nil {
+			panic("length expression is nil")
+		}
+		expr, ok := lengthExpr.(ast.Expr)
+		if !ok {
+			panic(fmt.Sprintf("length expression not Expr: %T", lengthExpr))
+		}
+		a.Lengths = append(a.Lengths, expr)
+	}
+	elemType := v.Visit(ctx.Type_())
+	if elemType == nil {
+		panic("array element type is nil")
+	}
+	typeExpr, ok := elemType.(ast.TypeExpr)
+	if !ok {
+		panic(fmt.Sprintf("array element type not TypeExpr: %T", elemType))
+	}
+	a.Elem = typeExpr
 	return a
 }
 
 func (v *ASTBuilder) VisitLength(ctx *LengthContext) interface{} {
-	return v.Visit(ctx.ConstExpression())
+	expr := v.Visit(ctx.ConstExpression())
+	if expr == nil {
+		panic("length constant expression is nil")
+	}
+	return expr
 }
 
 func (v *ASTBuilder) VisitRecordType(ctx *RecordTypeContext) interface{} {
 	r := &ast.RecordType{}
-	base := ctx.BaseType()
-	if base != nil && base.Qualident() != nil {
-		r.Base = v.qualidentText(base.Qualident())
+	if base := ctx.BaseType(); base != nil {
+		if q := base.Qualident(); q != nil {
+			r.Base = v.qualidentText(q)
+		}
 	}
-	fls := ctx.FieldListSequence()
-	if fls != nil {
+	if fls := ctx.FieldListSequence(); fls != nil {
 		for _, f := range fls.AllFieldList() {
-			r.Fields = append(r.Fields, v.Visit(f).(*ast.FieldDecl))
+			fd := v.Visit(f).(*ast.FieldDecl)
+			if fd != nil && fd.Type != nil {
+				r.Fields = append(r.Fields, fd)
+				for _, nameDef := range fd.Names {
+					r.FieldOrder = append(r.FieldOrder, nameDef.Name)
+				}
+			}
 		}
 	}
 	return r
 }
 
 func (v *ASTBuilder) VisitFieldList(ctx *FieldListContext) interface{} {
-	return &ast.FieldDecl{Names: v.Visit(ctx.IdentList()).([]ast.IdentDef), Type: v.Visit(ctx.Type_()).(ast.TypeExpr)}
+	namesRaw := v.Visit(ctx.IdentList())
+	if namesRaw == nil {
+		panic("field list: identList is nil")
+	}
+	names, ok := namesRaw.([]ast.IdentDef)
+	if !ok {
+		panic(fmt.Sprintf("field list: identList not []IdentDef: %T", namesRaw))
+	}
+	if len(names) == 0 {
+		return &ast.FieldDecl{Names: []ast.IdentDef{}, Type: nil}
+	}
+	typRaw := v.Visit(ctx.Type_())
+	if typRaw == nil {
+		fmt.Println("Warning: field list has no type, skipping")
+		return &ast.FieldDecl{Names: names, Type: nil}
+	}
+	typ, ok := typRaw.(ast.TypeExpr)
+	if !ok {
+		panic(fmt.Sprintf("field list: type not TypeExpr: %T", typRaw))
+	}
+	return &ast.FieldDecl{Names: names, Type: typ}
 }
 
 func (v *ASTBuilder) VisitPointerType(ctx *PointerTypeContext) interface{} {
@@ -241,32 +336,45 @@ func (v *ASTBuilder) VisitPointerType(ctx *PointerTypeContext) interface{} {
 
 func (v *ASTBuilder) VisitProcedureType(ctx *ProcedureTypeContext) interface{} {
 	proc := &ast.ProcedureType{}
-	sig := ctx.FormalParameters()
-	if sig != nil {
+	if sig := ctx.FormalParameters(); sig != nil {
 		proc.Signature = v.Visit(sig).(*ast.ProcedureSignature)
 	}
-
 	return proc
 }
 
 func (v *ASTBuilder) VisitIdentList(ctx *IdentListContext) interface{} {
 	list := make([]ast.IdentDef, 0, len(ctx.AllIdentdef()))
 	for _, i := range ctx.AllIdentdef() {
-		list = append(list, v.Visit(i).(ast.IdentDef))
+		if i == nil {
+			continue
+		}
+		val := v.Visit(i)
+		if val == nil {
+			continue
+		}
+		if id, ok := val.(ast.IdentDef); ok {
+			list = append(list, id)
+		}
 	}
 	return list
 }
 
-func (v *ASTBuilder) VisitIdentDef(ctx *IdentdefContext) interface{} {
-	return &ast.IdentDef{Name: ctx.Ident().GetText(), Exported: ctx.GetChildCount() > 1}
+func (v *ASTBuilder) VisitIdentdef(ctx *IdentdefContext) interface{} {
+	if ident := ctx.Ident(); ident != nil {
+		return ast.IdentDef{
+			Name:     ident.GetText(),
+			Exported: ctx.GetChildCount() > 1,
+		}
+	}
+	return ast.IdentDef{Name: "", Exported: false}
 }
 
 func (v *ASTBuilder) VisitStatementSequence(ctx *StatementSequenceContext) interface{} {
-	ss := make([]ast.Stmt, 0, len(ctx.AllStatement()))
-	for _, s := range ctx.AllStatement() {
-		ts := v.Visit(s)
-		if ts != nil {
-			ss = append(ss, ts.(ast.Stmt))
+	allStmts := ctx.AllStatement()
+	ss := make([]ast.Stmt, 0, len(allStmts))
+	for _, stmtCtx := range allStmts {
+		if stmt := v.Visit(stmtCtx); stmt != nil {
+			ss = append(ss, stmt.(ast.Stmt))
 		}
 	}
 	return ss
@@ -294,7 +402,58 @@ func (v *ASTBuilder) VisitStatement(ctx *StatementContext) interface{} {
 }
 
 func (v *ASTBuilder) VisitAssignment(ctx *AssignmentContext) interface{} {
-	return &ast.AssignmentStmt{Target: v.Visit(ctx.Designator()).(*ast.DesignatorExpr), Value: v.Visit(ctx.Expression()).(ast.Expr)}
+	targetRaw := v.Visit(ctx.Designator())
+	if targetRaw == nil {
+		panic("assignment target is nil")
+	}
+	target, ok := targetRaw.(*ast.DesignatorExpr)
+	if !ok {
+		panic(fmt.Sprintf("assignment target is not DesignatorExpr, got %T", targetRaw))
+	}
+	exprCtx := ctx.Expression()
+	if exprCtx == nil {
+		panic(fmt.Sprintf("Expression context is nil for assignment target %v", target))
+	}
+	valueRaw := v.Visit(exprCtx)
+	if valueRaw == nil {
+		panic(fmt.Sprintf("Visit returned nil for expression: %s", exprCtx.GetText()))
+	}
+	value, ok := valueRaw.(ast.Expr)
+	if !ok {
+		panic(fmt.Sprintf("assignment value is not Expr, got %T", valueRaw))
+	}
+	return &ast.AssignmentStmt{Target: target, Value: value}
+}
+
+func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
+	all := ctx.AllSimpleExpression()
+	if len(all) == 0 {
+		panic("expression has no simple expression")
+	}
+	leftVal := v.Visit(all[0])
+	if leftVal == nil {
+		panic("left simple expression returned nil")
+	}
+	left, ok := leftVal.(ast.Expr)
+	if !ok {
+		panic(fmt.Sprintf("left simple expression is not Expr: %T", leftVal))
+	}
+	if ctx.Relation() == nil && len(all) < 2 {
+		return left
+	}
+	if len(all) < 2 {
+		panic("relation present but no right simple expression")
+	}
+	rightVal := v.Visit(all[1])
+	if rightVal == nil {
+		panic("right simple expression returned nil")
+	}
+	right, ok := rightVal.(ast.Expr)
+	if !ok {
+		panic(fmt.Sprintf("right simple expression is not Expr: %T", rightVal))
+	}
+	rel := ctx.Relation().GetText()
+	return &ast.BinaryExpr{Left: left, Op: rel, Right: right}
 }
 
 func (v *ASTBuilder) VisitProcedureCall(ctx *ProcedureCallContext) interface{} {
@@ -311,7 +470,10 @@ func (v *ASTBuilder) VisitIfStatement(ctx *IfStatementContext) interface{} {
 	seqs := ctx.AllStatementSequence()
 	stmt := &ast.IfStmt{}
 	for i := 0; i < len(exprs) && i < len(seqs); i++ {
-		stmt.Branches = append(stmt.Branches, &ast.IfBranch{Cond: v.Visit(exprs[i]).(ast.Expr), Body: v.Visit(seqs[i]).([]ast.Stmt)})
+		stmt.Branches = append(stmt.Branches, &ast.IfBranch{
+			Cond: v.Visit(exprs[i]).(ast.Expr),
+			Body: v.Visit(seqs[i]).([]ast.Stmt),
+		})
 	}
 	if len(seqs) > len(exprs) {
 		stmt.ElseBody = v.Visit(seqs[len(seqs)-1]).([]ast.Stmt)
@@ -322,7 +484,8 @@ func (v *ASTBuilder) VisitIfStatement(ctx *IfStatementContext) interface{} {
 func (v *ASTBuilder) VisitCaseStatement(ctx *CaseStatementContext) interface{} {
 	c := &ast.CaseStmt{Expr: v.Visit(ctx.Expression()).(ast.Expr)}
 	for _, cc := range ctx.AllCase_() {
-		c.Branches = append(c.Branches, v.Visit(cc).(*ast.CaseBranch))
+		branch := v.Visit(cc).(*ast.CaseBranch)
+		c.Branches = append(c.Branches, branch)
 	}
 	return c
 }
@@ -350,7 +513,7 @@ func (v *ASTBuilder) VisitLabelRange(ctx *LabelRangeContext) interface{} {
 	lr := &ast.CaseLabel{}
 	all := ctx.AllLabel()
 	if len(all) == 0 {
-		return nil
+		return lr
 	}
 	lr.From = v.Visit(all[0]).(ast.Expr)
 	lr.To = lr.From
@@ -361,6 +524,9 @@ func (v *ASTBuilder) VisitLabelRange(ctx *LabelRangeContext) interface{} {
 }
 
 func (v *ASTBuilder) VisitLabel(ctx *LabelContext) interface{} {
+	if tok := ctx.INTEGER(); tok != nil {
+		return &ast.NumberExpr{Text: tok.GetText()}
+	}
 	return &ast.NumberExpr{Text: ctx.GetText()}
 }
 
@@ -369,24 +535,33 @@ func (v *ASTBuilder) VisitWhileStatement(ctx *WhileStatementContext) interface{}
 	exprs := ctx.AllExpression()
 	seqs := ctx.AllStatementSequence()
 	for i := 0; i < len(exprs) && i < len(seqs); i++ {
-		w.Branches = append(w.Branches, &ast.IfBranch{Cond: v.Visit(exprs[i]).(ast.Expr), Body: v.Visit(seqs[i]).([]ast.Stmt)})
+		w.Branches = append(w.Branches, &ast.IfBranch{
+			Cond: v.Visit(exprs[i]).(ast.Expr),
+			Body: v.Visit(seqs[i]).([]ast.Stmt),
+		})
 	}
 	return w
 }
 
 func (v *ASTBuilder) VisitRepeatStatement(ctx *RepeatStatementContext) interface{} {
-	return &ast.RepeatStmt{Body: v.Visit(ctx.StatementSequence()).([]ast.Stmt), Until: v.Visit(ctx.Expression()).(ast.Expr)}
+	return &ast.RepeatStmt{
+		Body:  v.Visit(ctx.StatementSequence()).([]ast.Stmt),
+		Until: v.Visit(ctx.Expression()).(ast.Expr),
+	}
 }
 
 func (v *ASTBuilder) VisitForStatement(ctx *ForStatementContext) interface{} {
 	f := &ast.ForStmt{}
 	f.Var = ctx.Ident().GetText()
 	exprs := ctx.AllExpression()
+	if len(exprs) < 2 {
+		panic("for statement missing from or to expression")
+	}
 	f.From = v.Visit(exprs[0]).(ast.Expr)
 	f.To = v.Visit(exprs[1]).(ast.Expr)
 	f.Body = v.Visit(ctx.StatementSequence()).([]ast.Stmt)
 	if by := ctx.ConstExpression(); by != nil {
-		f.By = v.Visit(ctx.ConstExpression()).(ast.Expr)
+		f.By = v.Visit(by).(ast.Expr)
 		f.HasBy = true
 	}
 	return f
@@ -402,27 +577,38 @@ func (v *ASTBuilder) VisitActualParameters(ctx *ActualParametersContext) interfa
 func (v *ASTBuilder) VisitExpList(ctx *ExpListContext) interface{} {
 	list := make([]ast.Expr, 0, len(ctx.AllExpression()))
 	for _, e := range ctx.AllExpression() {
-		list = append(list, v.Visit(e).(ast.Expr))
+		expr := v.Visit(e)
+		if expr == nil {
+			panic("expression in expList is nil")
+		}
+		list = append(list, expr.(ast.Expr))
 	}
 	return list
 }
 
-func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
-	all := ctx.AllSimpleExpression()
-	if len(all) == 0 {
-		return nil
-	}
-	left := v.Visit(all[0]).(ast.Expr)
-	if ctx.Relation() == nil && len(all) < 2 {
-		return left
-	}
-	right := v.Visit(all[1]).(ast.Expr)
-	rel := ctx.Relation().GetText()
-	return &ast.BinaryExpr{Left: left, Op: rel, Right: right}
-}
-
 func (v *ASTBuilder) VisitSimpleExpression(ctx *SimpleExpressionContext) interface{} {
 	allterm := ctx.AllTerm()
+	if len(allterm) == 0 {
+		for i := 0; i < ctx.GetChildCount(); i++ {
+			child := ctx.GetChild(i)
+			switch c := child.(type) {
+			case *NumberContext:
+				return &ast.NumberExpr{Text: c.GetText()}
+			case *DesignatorContext:
+				return v.Visit(c)
+			case *FactorContext:
+				return v.Visit(c)
+			case *antlr.ErrorNodeImpl:
+				text := c.GetText()
+				if text != "" {
+					return &ast.NumberExpr{Text: text}
+				}
+			case antlr.TerminalNode:
+				return &ast.NumberExpr{Text: c.GetText()}
+			}
+		}
+		return nil
+	}
 	expr := v.Visit(allterm[0]).(ast.Expr)
 	if fc, ok := allterm[0].GetChild(0).(antlr.TerminalNode); ok {
 		if op := fc.GetText(); op == "+" || op == "-" {
@@ -433,9 +619,9 @@ func (v *ASTBuilder) VisitSimpleExpression(ctx *SimpleExpressionContext) interfa
 		if i+1 >= len(allterm) {
 			break
 		}
-		op := op.GetText()
+		opText := op.GetText()
 		right := v.Visit(allterm[i+1]).(ast.Expr)
-		expr = &ast.BinaryExpr{Left: expr, Op: op, Right: right}
+		expr = &ast.BinaryExpr{Left: expr, Op: opText, Right: right}
 	}
 	return expr
 }
@@ -458,7 +644,14 @@ func (v *ASTBuilder) VisitTerm(ctx *TermContext) interface{} {
 func (v *ASTBuilder) VisitFactor(ctx *FactorContext) interface{} {
 	switch {
 	case ctx.Number() != nil:
-		return &ast.NumberExpr{Text: ctx.Number().GetText()}
+		numCtx := ctx.Number()
+		if numCtx.INTEGER() != nil {
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false}
+		} else if numCtx.REAL() != nil {
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: true}
+		} else {
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false}
+		}
 	case ctx.STRING() != nil:
 		return &ast.StringExpr{Value: ctx.STRING().GetText()}
 	case ctx.NIL() != nil:
@@ -470,9 +663,21 @@ func (v *ASTBuilder) VisitFactor(ctx *FactorContext) interface{} {
 	case ctx.Set_() != nil:
 		return v.Visit(ctx.Set_())
 	case ctx.Designator() != nil:
-		base := v.Visit(ctx.Designator()).(ast.Expr)
+		baseRaw := v.Visit(ctx.Designator())
+		if baseRaw == nil {
+			panic("designator in factor returned nil")
+		}
+		base, ok := baseRaw.(ast.Expr)
+		if !ok {
+			panic(fmt.Sprintf("designator did not return Expr: %T", baseRaw))
+		}
 		if ap := ctx.ActualParameters(); ap != nil {
-			return &ast.CallExpr{Callee: base, Args: v.Visit(ap).([]ast.Expr)}
+			argsRaw := v.Visit(ap)
+			args, ok := argsRaw.([]ast.Expr)
+			if !ok {
+				panic(fmt.Sprintf("actualParameters did not return []Expr: %T", argsRaw))
+			}
+			return &ast.CallExpr{Callee: base, Args: args}
 		}
 		return base
 	case ctx.Expression() != nil:
@@ -480,7 +685,7 @@ func (v *ASTBuilder) VisitFactor(ctx *FactorContext) interface{} {
 	case ctx.Factor() != nil:
 		return &ast.UnaryExpr{Op: "~", Expr: v.Visit(ctx.Factor()).(ast.Expr)}
 	default:
-		panic("factor")
+		panic("unknown factor")
 	}
 }
 
@@ -506,9 +711,15 @@ func (v *ASTBuilder) VisitElement(ctx *ElementContext) interface{} {
 }
 
 func (v *ASTBuilder) VisitDesignator(ctx *DesignatorContext) interface{} {
-	des := &ast.DesignatorExpr{Base: v.qualident(ctx.Qualident())}
-	for _, s := range ctx.AllSelector() {
-		des.Selectors = append(des.Selectors, v.Visit(s).(ast.Selector))
+	q := ctx.Qualident()
+	if q == nil {
+		panic("designator without qualident")
+	}
+	base := v.qualident(q)
+	des := &ast.DesignatorExpr{Base: base}
+	for _, selCtx := range ctx.AllSelector() {
+		sel := v.Visit(selCtx).(ast.Selector)
+		des.Selectors = append(des.Selectors, sel)
 	}
 	return des
 }
@@ -518,9 +729,17 @@ func (v *ASTBuilder) VisitSelector(ctx *SelectorContext) interface{} {
 	case ctx.Ident() != nil:
 		return ast.Selector{Field: ctx.Ident().GetText()}
 	case ctx.ExpList() != nil:
-		return ast.Selector{Index: v.Visit(ctx.ExpList()).([]ast.Expr)}
-	case ctx.Qualident() != nil:
-		return ast.Selector{Type: v.qualidentText(ctx.Qualident())}
+		exprsRaw := v.Visit(ctx.ExpList())
+		if exprsRaw == nil {
+			return ast.Selector{Index: []ast.Expr{}}
+		}
+		exprs, ok := exprsRaw.([]ast.Expr)
+		if !ok {
+			panic(fmt.Sprintf("expList returned %T, expected []ast.Expr", exprsRaw))
+		}
+		return ast.Selector{Index: exprs}
+	// case ctx.Qualident() != nil: // Удалено, так как этой альтернативы больше нет в грамматике
+	//     return ast.Selector{Type: v.qualidentText(ctx.Qualident())}
 	default:
 		return ast.Selector{Deref: true}
 	}
@@ -528,13 +747,13 @@ func (v *ASTBuilder) VisitSelector(ctx *SelectorContext) interface{} {
 
 func (v *ASTBuilder) qualident(ctx IQualidentContext) ast.QualIdent {
 	ids := ctx.AllIdent()
+	if len(ids) == 0 {
+		panic("qualident without ident")
+	}
 	if len(ids) == 1 {
 		return ast.QualIdent{Name: ids[0].GetText()}
 	}
-	if len(ids) >= 2 {
-		return ast.QualIdent{Module: ids[0].GetText(), Name: ids[1].GetText()}
-	}
-	return ast.QualIdent{}
+	return ast.QualIdent{Module: ids[0].GetText(), Name: ids[1].GetText()}
 }
 
 func (v *ASTBuilder) qualidentText(ctx IQualidentContext) string {

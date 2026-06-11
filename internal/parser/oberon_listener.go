@@ -16,15 +16,6 @@ type oberonListener interface {
 	// EnterIdentdef is called when entering the identdef production.
 	EnterIdentdef(c *IdentdefContext)
 
-	// EnterInteger is called when entering the integer production.
-	EnterInteger(c *IntegerContext)
-
-	// EnterReal is called when entering the real production.
-	EnterReal(c *RealContext)
-
-	// EnterScaleFactor is called when entering the scaleFactor production.
-	EnterScaleFactor(c *ScaleFactorContext)
-
 	// EnterNumber is called when entering the number production.
 	EnterNumber(c *NumberContext)
 
@@ -186,15 +177,6 @@ type oberonListener interface {
 
 	// ExitIdentdef is called when exiting the identdef production.
 	ExitIdentdef(c *IdentdefContext)
-
-	// ExitInteger is called when exiting the integer production.
-	ExitInteger(c *IntegerContext)
-
-	// ExitReal is called when exiting the real production.
-	ExitReal(c *RealContext)
-
-	// ExitScaleFactor is called when exiting the scaleFactor production.
-	ExitScaleFactor(c *ScaleFactorContext)
 
 	// ExitNumber is called when exiting the number production.
 	ExitNumber(c *NumberContext)

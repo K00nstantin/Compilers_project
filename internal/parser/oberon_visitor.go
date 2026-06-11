@@ -16,15 +16,6 @@ type oberonVisitor interface {
 	// Visit a parse tree produced by oberonParser#identdef.
 	VisitIdentdef(ctx *IdentdefContext) interface{}
 
-	// Visit a parse tree produced by oberonParser#integer.
-	VisitInteger(ctx *IntegerContext) interface{}
-
-	// Visit a parse tree produced by oberonParser#real.
-	VisitReal(ctx *RealContext) interface{}
-
-	// Visit a parse tree produced by oberonParser#scaleFactor.
-	VisitScaleFactor(ctx *ScaleFactorContext) interface{}
-
 	// Visit a parse tree produced by oberonParser#number.
 	VisitNumber(ctx *NumberContext) interface{}
 

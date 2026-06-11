@@ -39,6 +39,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 grammar oberon;
 
+// Parser rules
 ident
     : IDENT
     ;
@@ -51,22 +52,10 @@ identdef
     : ident '*'?
     ;
 
-integer
-    : (DIGIT+)
-    | (DIGIT HEXDIGIT* 'H')
-    ;
-
-real
-    : DIGIT+ '.' DIGIT* scaleFactor?
-    ;
-
-scaleFactor
-    : 'E' ('+' | '-')? DIGIT+
-    ;
-
 number
-    : integer
-    | real
+    : INTEGER
+    | REAL
+    | HEXNUMBER
     ;
 
 constDeclaration
@@ -186,7 +175,6 @@ selector
     : '.' ident
     | '[' expList ']'
     | '^'
-    | '(' qualident ')'
     ;
 
 set_
@@ -252,7 +240,7 @@ labelRange
     ;
 
 label
-    : integer
+    : INTEGER
     | STRING
     | qualident
     ;
@@ -311,169 +299,55 @@ import_
     : ident (':=' ident)?
     ;
 
-ARRAY
-    : 'ARRAY'
-    ;
-
-OF
-    : 'OF'
-    ;
-
-END
-    : 'END'
-    ;
-
-POINTER
-    : 'POINTER'
-    ;
-
-TO
-    : 'TO'
-    ;
-
-RECORD
-    : 'RECORD'
-    ;
-
-PROCEDURE
-    : 'PROCEDURE'
-    ;
-
-IN
-    : 'IN'
-    ;
-
-IS
-    : 'IS'
-    ;
-
-OR
-    : 'OR'
-    ;
-
-DIV
-    : 'DIV'
-    ;
-
-MOD
-    : 'MOD'
-    ;
-
-NIL
-    : 'NIL'
-    ;
-
-TRUE
-    : 'TRUE'
-    ;
-
-FALSE
-    : 'FALSE'
-    ;
-
-IF
-    : 'IF'
-    ;
-
-THEN
-    : 'THEN'
-    ;
-
-ELSIF
-    : 'ELSIF'
-    ;
-
-ELSE
-    : 'ELSE'
-    ;
-
-CASE
-    : 'CASE'
-    ;
-
-WHILE
-    : 'WHILE'
-    ;
-
-DO
-    : 'DO'
-    ;
-
-REPEAT
-    : 'REPEAT'
-    ;
-
-UNTIL
-    : 'UNTIL'
-    ;
-
-FOR
-    : 'FOR'
-    ;
-
-BY
-    : 'BY'
-    ;
-
-BEGIN
-    : 'BEGIN'
-    ;
-
-RETURN
-    : 'RETURN'
-    ;
-
-CONST
-    : 'CONST'
-    ;
-
-TYPE
-    : 'TYPE'
-    ;
-
-VAR
-    : 'VAR'
-    ;
-
-MODULE
-    : 'MODULE'
-    ;
-
-IMPORT
-    : 'IMPORT'
-    ;
+// Lexer rules (tokens)
+ARRAY   : 'ARRAY';
+OF      : 'OF';
+END     : 'END';
+POINTER : 'POINTER';
+TO      : 'TO';
+RECORD  : 'RECORD';
+PROCEDURE : 'PROCEDURE';
+IN      : 'IN';
+IS      : 'IS';
+OR      : 'OR';
+DIV     : 'DIV';
+MOD     : 'MOD';
+NIL     : 'NIL';
+TRUE    : 'TRUE';
+FALSE   : 'FALSE';
+IF      : 'IF';
+THEN    : 'THEN';
+ELSIF   : 'ELSIF';
+ELSE    : 'ELSE';
+CASE    : 'CASE';
+WHILE   : 'WHILE';
+DO      : 'DO';
+REPEAT  : 'REPEAT';
+UNTIL   : 'UNTIL';
+FOR     : 'FOR';
+BY      : 'BY';
+BEGIN   : 'BEGIN';
+RETURN  : 'RETURN';
+CONST   : 'CONST';
+TYPE    : 'TYPE';
+VAR     : 'VAR';
+MODULE  : 'MODULE';
+IMPORT  : 'IMPORT';
 
 STRING
     : ('"' .*? '"')
     | (DIGIT HEXDIGIT* 'X')
     ;
 
-HEXDIGIT
-    : DIGIT
-    | 'A'
-    | 'B'
-    | 'C'
-    | 'D'
-    | 'E'
-    | 'F'
-    ;
+INTEGER : DIGIT+;
+HEXNUMBER : DIGIT HEXDIGIT* 'H';
+REAL    : DIGIT+ '.' DIGIT* ('E' ('+'|'-')? DIGIT+)?;
 
-IDENT
-    : LETTER (LETTER | DIGIT)*
-    ;
+fragment HEXDIGIT : DIGIT | [A-F];
+fragment DIGIT    : [0-9];
 
-LETTER
-    : [a-zA-Z]
-    ;
+IDENT   : LETTER (LETTER | DIGIT)*;
+fragment LETTER : [a-zA-Z];
 
-DIGIT
-    : [0-9]
-    ;
-
-COMMENT
-    : '(*' .*? '*)' -> skip
-    ;
-
-WS
-    : [ \t\r\n] -> skip
-    ;
+COMMENT : '(*' .*? '*)' -> skip;
+WS      : [ \t\r\n] -> skip;

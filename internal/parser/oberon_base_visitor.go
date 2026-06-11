@@ -19,18 +19,6 @@ func (v *BaseoberonVisitor) VisitIdentdef(ctx *IdentdefContext) interface{} {
 	return v.VisitChildren(ctx)
 }
 
-func (v *BaseoberonVisitor) VisitInteger(ctx *IntegerContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseoberonVisitor) VisitReal(ctx *RealContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
-func (v *BaseoberonVisitor) VisitScaleFactor(ctx *ScaleFactorContext) interface{} {
-	return v.VisitChildren(ctx)
-}
-
 func (v *BaseoberonVisitor) VisitNumber(ctx *NumberContext) interface{} {
 	return v.VisitChildren(ctx)
 }

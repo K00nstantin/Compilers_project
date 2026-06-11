@@ -38,24 +38,6 @@ func (s *BaseoberonListener) EnterIdentdef(ctx *IdentdefContext) {}
 // ExitIdentdef is called when production identdef is exited.
 func (s *BaseoberonListener) ExitIdentdef(ctx *IdentdefContext) {}
 
-// EnterInteger is called when production integer is entered.
-func (s *BaseoberonListener) EnterInteger(ctx *IntegerContext) {}
-
-// ExitInteger is called when production integer is exited.
-func (s *BaseoberonListener) ExitInteger(ctx *IntegerContext) {}
-
-// EnterReal is called when production real is entered.
-func (s *BaseoberonListener) EnterReal(ctx *RealContext) {}
-
-// ExitReal is called when production real is exited.
-func (s *BaseoberonListener) ExitReal(ctx *RealContext) {}
-
-// EnterScaleFactor is called when production scaleFactor is entered.
-func (s *BaseoberonListener) EnterScaleFactor(ctx *ScaleFactorContext) {}
-
-// ExitScaleFactor is called when production scaleFactor is exited.
-func (s *BaseoberonListener) ExitScaleFactor(ctx *ScaleFactorContext) {}
-
 // EnterNumber is called when production number is entered.
 func (s *BaseoberonListener) EnterNumber(ctx *NumberContext) {}
 

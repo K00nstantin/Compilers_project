@@ -57,7 +57,7 @@ type ProcedureSignature struct {
 type ParamSection struct {
 	ByRef bool
 	Names []string
-	Type  string
+	Type  TypeExpr
 }
 
 type TypeExpr interface {
@@ -83,8 +83,9 @@ type FieldDecl struct {
 }
 
 type RecordType struct {
-	Base   string
-	Fields []*FieldDecl
+	Base       string
+	Fields     []*FieldDecl
+	FieldOrder []string
 }
 
 func (*RecordType) typeExprNode() {}
@@ -191,7 +192,8 @@ type UnaryExpr struct {
 func (*UnaryExpr) exprNode() {}
 
 type NumberExpr struct {
-	Text string
+	Text   string
+	IsReal bool
 }
 
 func (*NumberExpr) exprNode() {}
