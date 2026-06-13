@@ -13,14 +13,28 @@ import (
 )
 
 type Generator struct {
-	module           *ir.Module
-	moduleName       string
-	curBlock         *ir.Block
-	curFunc          *ir.Func
-	symStack         []map[string]value.Value
-	fieldNameToIndex map[*types.StructType]map[string]int
-	recordTypes      map[string]*ast.RecordType
-	blockCounter     int
+	module              *ir.Module
+	moduleName          string
+	curBlock            *ir.Block
+	curFunc             *ir.Func
+	symStack            []map[string]value.Value
+	fieldNameToIndex    map[*types.StructType]map[string]int
+	recordTypes         map[string]*ast.RecordType
+	blockCounter        int
+	currentProc         *ast.ProcedureDecl
+	framePtr            value.Value
+	varInfo             map[string]VarInfo
+	procFrames          map[*ast.ProcedureDecl]*types.StructType
+	currentResultAlloca value.Value // alloca для возвращаемого значения текущей функции
+	currentRetType      types.Type  // тип возврата текущей функции
+}
+
+type VarInfo struct {
+	NestingLevel int
+	FrameOffset  int
+	FrameType    *types.StructType
+	IsGlobal     bool
+	GlobalValue  value.Value
 }
 
 func NewGenerator(moduleName string) *Generator {
@@ -35,6 +49,8 @@ func NewGenerator(moduleName string) *Generator {
 		fieldNameToIndex: make(map[*types.StructType]map[string]int),
 		recordTypes:      make(map[string]*ast.RecordType),
 		blockCounter:     0,
+		varInfo:          make(map[string]VarInfo),
+		procFrames:       make(map[*ast.ProcedureDecl]*types.StructType),
 	}
 	g.pushScope()
 	return g
@@ -71,6 +87,102 @@ func (g *Generator) nextBlockName(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, g.blockCounter)
 }
 
+func (g *Generator) buildFrameType(proc *ast.ProcedureDecl) *types.StructType {
+	if t, ok := g.procFrames[proc]; ok {
+		return t
+	}
+	var fields []types.Type
+	// static link only for nesting level >= 2
+	if proc.NestingLevel > 1 {
+		fields = append(fields, types.I8Ptr)
+	}
+	if proc.Declarations != nil {
+		for _, v := range proc.Declarations.Vars {
+			typ := g.oberonTypeToLLVM(v.Type)
+			for range v.Names {
+				fields = append(fields, typ)
+			}
+		}
+	}
+	if proc.Signature != nil {
+		for _, ps := range proc.Signature.Params {
+			if ps.ByRef {
+				continue
+			}
+			typ := g.oberonTypeToLLVM(ps.Type)
+			for range ps.Names {
+				fields = append(fields, typ)
+			}
+		}
+	}
+	frameType := types.NewStruct(fields...)
+	g.procFrames[proc] = frameType
+	return frameType
+}
+
+func (g *Generator) registerVar(name string, nestingLevel int, frameOffset int, frameType *types.StructType) {
+	g.varInfo[name] = VarInfo{
+		NestingLevel: nestingLevel,
+		FrameOffset:  frameOffset,
+		FrameType:    frameType,
+	}
+}
+
+func (g *Generator) registerVarParam(name string, nestingLevel int, val value.Value) {
+	g.varInfo[name] = VarInfo{
+		NestingLevel: nestingLevel,
+		FrameOffset:  -1,
+		GlobalValue:  val,
+		IsGlobal:     false,
+	}
+}
+
+func (g *Generator) getVarPtr(name string) value.Value {
+	info, ok := g.varInfo[name]
+	if !ok {
+		if val, ok := g.lookup(name); ok {
+			if _, ok := val.Type().(*types.PointerType); ok {
+				return val
+			}
+			panic("variable " + name + " is not a pointer")
+		}
+		panic("unknown variable: " + name)
+	}
+	if info.IsGlobal {
+		return info.GlobalValue
+	}
+	if info.FrameOffset == -1 {
+		// VAR-параметр или переданный указатель
+		return info.GlobalValue
+	}
+	if info.NestingLevel == g.currentProc.NestingLevel {
+		frameType := g.buildFrameType(g.currentProc)
+		ptr := g.curBlock.NewGetElementPtr(frameType, g.framePtr,
+			constant.NewInt(types.I32, 0),
+			constant.NewInt(types.I32, int64(info.FrameOffset)))
+		return ptr
+	}
+	// Нелокальная переменная: поднимаемся по статическим ссылкам
+	curProc := g.currentProc
+	frame := g.framePtr
+	for curProc.NestingLevel > info.NestingLevel {
+		frameType := g.buildFrameType(curProc)
+		staticLinkPtr := g.curBlock.NewGetElementPtr(frameType, frame,
+			constant.NewInt(types.I32, 0),
+			constant.NewInt(types.I32, 0))
+		frame = g.curBlock.NewLoad(types.I8Ptr, staticLinkPtr)
+		curProc = curProc.Parent
+		if curProc == nil {
+			panic("broken parent chain for variable " + name)
+		}
+	}
+	frameTyped := g.curBlock.NewBitCast(frame, types.NewPointer(info.FrameType))
+	ptr := g.curBlock.NewGetElementPtr(info.FrameType, frameTyped,
+		constant.NewInt(types.I32, 0),
+		constant.NewInt(types.I32, int64(info.FrameOffset)))
+	return ptr
+}
+
 func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 	switch tt := t.(type) {
 	case *ast.NamedType:
@@ -79,10 +191,10 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 			return types.I32
 		case "BOOLEAN":
 			return types.I1
-		case "SET":
-			return types.I32
 		case "REAL":
 			return types.Float
+		case "SET":
+			return types.I32
 		default:
 			if rec, ok := g.recordTypes[tt.Name]; ok {
 				return g.oberonTypeToLLVM(rec)
@@ -92,10 +204,8 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 	case *ast.ArrayType:
 		elemType := g.oberonTypeToLLVM(tt.Elem)
 		if len(tt.Lengths) == 0 {
-			// Открытый массив: представляем как указатель на элемент
 			return types.NewPointer(elemType)
 		}
-		// Фиксированный массив: вложенные массивы
 		for i := len(tt.Lengths) - 1; i >= 0; i-- {
 			length := g.constExprToInt(tt.Lengths[i])
 			elemType = types.NewArray(uint64(length), elemType)
@@ -104,8 +214,6 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 	case *ast.RecordType:
 		var fields []types.Type
 		var fieldNames []string
-
-		// Рекурсивный сбор полей (сначала базовые, потом текущие)
 		var collectFields func(rec *ast.RecordType)
 		collectFields = func(rec *ast.RecordType) {
 			if rec.Base != "" {
@@ -124,7 +232,6 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 			}
 		}
 		collectFields(tt)
-
 		structType := types.NewStruct(fields...)
 		nameMap := make(map[string]int)
 		for i, name := range fieldNames {
@@ -134,7 +241,6 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 		return structType
 	case *ast.PointerType:
 		return types.NewPointer(g.oberonTypeToLLVM(tt.Target))
-
 	default:
 		panic(fmt.Sprintf("unknown type: %T", t))
 	}
@@ -143,6 +249,9 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 func (g *Generator) constExprToInt(e ast.Expr) int {
 	switch ex := e.(type) {
 	case *ast.NumberExpr:
+		if ex.IsReal {
+			panic("constExprToInt called on REAL constant")
+		}
 		val, _ := strconv.Atoi(ex.Text)
 		return val
 	case *ast.BinaryExpr:
@@ -162,10 +271,73 @@ func (g *Generator) constExprToInt(e ast.Expr) int {
 	return 0
 }
 
-// constExprToIntOrNil возвращает *int64, если выражение константно, иначе nil
+func (g *Generator) constEval(e ast.Expr) (isReal bool, intVal int64, realVal float64) {
+	switch ex := e.(type) {
+	case *ast.NumberExpr:
+		if ex.IsReal {
+			val, err := strconv.ParseFloat(ex.Text, 64)
+			if err != nil {
+				panic("invalid real number: " + ex.Text)
+			}
+			return true, 0, val
+		}
+		val, err := strconv.ParseInt(ex.Text, 10, 64)
+		if err != nil {
+			panic("invalid integer number: " + ex.Text)
+		}
+		return false, val, 0
+	case *ast.BinaryExpr:
+		leftIsReal, leftInt, leftReal := g.constEval(ex.Left)
+		rightIsReal, rightInt, rightReal := g.constEval(ex.Right)
+		if leftIsReal || rightIsReal {
+			l := leftReal
+			if !leftIsReal {
+				l = float64(leftInt)
+			}
+			r := rightReal
+			if !rightIsReal {
+				r = float64(rightInt)
+			}
+			var res float64
+			switch ex.Op {
+			case "+":
+				res = l + r
+			case "-":
+				res = l - r
+			case "*":
+				res = l * r
+			case "/":
+				res = l / r
+			default:
+				panic("unsupported real const op")
+			}
+			return true, 0, res
+		}
+		var res int64
+		switch ex.Op {
+		case "+":
+			res = leftInt + rightInt
+		case "-":
+			res = leftInt - rightInt
+		case "*":
+			res = leftInt * rightInt
+		case "/":
+			res = leftInt / rightInt
+		default:
+			panic("unsupported integer const op")
+		}
+		return false, res, 0
+	default:
+		panic("non-constant expression in const declaration")
+	}
+}
+
 func (g *Generator) constExprToIntOrNil(e ast.Expr) *int64 {
 	switch ex := e.(type) {
 	case *ast.NumberExpr:
+		if ex.IsReal {
+			return nil
+		}
 		val, err := strconv.ParseInt(ex.Text, 10, 64)
 		if err != nil {
 			return nil
@@ -196,12 +368,17 @@ func (g *Generator) constExprToIntOrNil(e ast.Expr) *int64 {
 	}
 }
 
-// isSetValue определяет, является ли LLVM значение множеством (i32 с пометкой, что это множество).
-func (g *Generator) isSetValue(v value.Value) bool {
-	return v.Type() == types.I32
+func (g *Generator) isRealType(typ types.Type) bool {
+	return typ == types.Float
 }
 
-// genSetExpr генерирует битовую маску для литерала множества.
+func (g *Generator) promoteToReal(val value.Value) value.Value {
+	if val.Type() == types.I32 {
+		return g.curBlock.NewSIToFP(val, types.Float)
+	}
+	return val
+}
+
 func (g *Generator) genSetExpr(s *ast.SetExpr) value.Value {
 	mask := int64(0)
 	for _, elem := range s.Elements {
@@ -243,13 +420,11 @@ func (g *Generator) processDeclarations(decls *ast.DeclarationBlock, isGlobal bo
 	}
 	for _, c := range decls.Consts {
 		isReal, intVal, realVal := g.constEval(c.Value)
-		var llvmConst value.Value
 		if isReal {
-			llvmConst = constant.NewFloat(types.Float, realVal)
+			g.addSymbol(c.Name.Name, constant.NewFloat(types.Float, realVal))
 		} else {
-			llvmConst = constant.NewInt(types.I32, intVal)
+			g.addSymbol(c.Name.Name, constant.NewInt(types.I32, intVal))
 		}
-		g.addSymbol(c.Name.Name, llvmConst)
 	}
 	for _, t := range decls.Types {
 		if rec, ok := t.Type.(*ast.RecordType); ok {
@@ -260,19 +435,14 @@ func (g *Generator) processDeclarations(decls *ast.DeclarationBlock, isGlobal bo
 		llvmType := g.oberonTypeToLLVM(v.Type)
 		for _, nameDef := range v.Names {
 			name := nameDef.Name
-			var val value.Value
 			if isGlobal {
 				global := g.module.NewGlobal(name, llvmType)
 				global.Init = constant.NewZeroInitializer(llvmType)
 				if nameDef.Exported {
 					global.Linkage = enum.LinkageExternal
 				}
-				val = global
-			} else {
-				val = nil
-			}
-			if val != nil {
-				g.addSymbol(name, val)
+				g.addSymbol(name, global)
+				g.varInfo[name] = VarInfo{IsGlobal: true, GlobalValue: global}
 			}
 		}
 	}
@@ -282,77 +452,143 @@ func (g *Generator) processDeclarations(decls *ast.DeclarationBlock, isGlobal bo
 }
 
 func (g *Generator) generateProcedure(proc *ast.ProcedureDecl, isGlobal bool) {
+	oldProc := g.currentProc
+	g.currentProc = proc
+
+	frameType := g.buildFrameType(proc)
+
+	var llvmParams []*ir.Param
+	if proc.NestingLevel > 1 {
+		llvmParams = append(llvmParams, ir.NewParam("__static_link", types.I8Ptr))
+	}
+	if proc.Signature != nil {
+		for _, paramSec := range proc.Signature.Params {
+			paramType := g.oberonTypeToLLVM(paramSec.Type)
+			if paramSec.ByRef {
+				paramType = types.NewPointer(paramType)
+			}
+			for range paramSec.Names {
+				llvmParams = append(llvmParams, ir.NewParam("", paramType))
+			}
+		}
+	}
 	var retType types.Type = types.Void
 	if proc.Signature != nil && proc.Signature.ReturnType != "" {
 		retType = g.namedTypeToLLVM(proc.Signature.ReturnType)
 	}
-	var params []*ir.Param
-	if proc.Signature != nil {
-		for _, paramSec := range proc.Signature.Params {
-			typ := g.oberonTypeToLLVM(paramSec.Type)
-			if paramSec.ByRef {
-				typ = types.NewPointer(typ)
-			}
-			for _, paramName := range paramSec.Names {
-				params = append(params, ir.NewParam(paramName, typ))
-			}
-		}
-	}
 	funcName := proc.Name.Name
-	f := g.module.NewFunc(funcName, retType, params...)
+	f := g.module.NewFunc(funcName, retType, llvmParams...)
 	if proc.Name.Exported {
 		f.Linkage = enum.LinkageExternal
 	}
 	g.addSymbol(funcName, f)
+	g.varInfo[funcName] = VarInfo{NestingLevel: proc.NestingLevel}
+
 	oldFunc := g.curFunc
 	oldBlock := g.curBlock
+	oldFramePtr := g.framePtr
+	oldResultAlloca := g.currentResultAlloca // NEW
+	oldRetType := g.currentRetType           // NEW
 	defer func() {
 		g.curFunc = oldFunc
 		g.curBlock = oldBlock
+		g.framePtr = oldFramePtr
+		g.currentProc = oldProc
+		g.currentResultAlloca = oldResultAlloca // NEW
+		g.currentRetType = oldRetType           // NEW
 	}()
 	g.curFunc = f
-	entryBlock := f.NewBlock("entry")
-	g.curBlock = entryBlock
+	entry := f.NewBlock("entry")
+	g.curBlock = entry
 	g.pushScope()
 	defer g.popScope()
 
-	paramIdx := 0
-	for _, paramSec := range proc.Signature.Params {
-		for _, paramName := range paramSec.Names {
-			param := f.Params[paramIdx]
-			if paramSec.ByRef {
-				// VAR параметр: уже указатель, сохраняем как есть
-				g.addSymbol(paramName, param)
-			} else {
-				// Обычный параметр: копируем на стек
-				alloca := g.curBlock.NewAlloca(param.Typ)
-				g.curBlock.NewStore(param, alloca)
-				g.addSymbol(paramName, alloca)
+	frameAlloca := entry.NewAlloca(frameType)
+	g.framePtr = frameAlloca
+
+	fieldOffset := 0
+	if proc.NestingLevel > 1 {
+		staticLink := f.Params[0]
+		linkField := entry.NewGetElementPtr(frameType, frameAlloca,
+			constant.NewInt(types.I32, 0),
+			constant.NewInt(types.I32, 0))
+		entry.NewStore(staticLink, linkField)
+		fieldOffset = 1
+	}
+
+	// Создаём alloca для возвращаемого значения (если функция)
+	var resultAlloca value.Value = nil
+	if retType != types.Void {
+		resultAlloca = entry.NewAlloca(retType)
+		// Не добавляем в symStack, чтобы не мешать вызовам функции
+	}
+	g.currentResultAlloca = resultAlloca // NEW
+	g.currentRetType = retType           // NEW
+
+	// Локальные переменные
+	if proc.Declarations != nil {
+		for _, v := range proc.Declarations.Vars {
+			varType := g.oberonTypeToLLVM(v.Type)
+			for _, nameDef := range v.Names {
+				ptr := entry.NewGetElementPtr(frameType, frameAlloca,
+					constant.NewInt(types.I32, 0),
+					constant.NewInt(types.I32, int64(fieldOffset)))
+				entry.NewStore(constant.NewZeroInitializer(varType), ptr)
+				g.registerVar(nameDef.Name, proc.NestingLevel, fieldOffset, frameType)
+				fieldOffset++
 			}
-			paramIdx++
 		}
 	}
 
-	if proc.Declarations != nil {
-		for _, v := range proc.Declarations.Vars {
-			llvmType := g.oberonTypeToLLVM(v.Type)
-			for _, nameDef := range v.Names {
-				alloca := g.curBlock.NewAlloca(llvmType)
-				g.curBlock.NewStore(constant.NewZeroInitializer(llvmType), alloca)
-				g.addSymbol(nameDef.Name, alloca)
+	// Параметры
+	paramIdx := 0
+	if proc.NestingLevel > 1 {
+		paramIdx = 1
+	}
+	if proc.Signature != nil {
+		for _, paramSec := range proc.Signature.Params {
+			for _, paramName := range paramSec.Names {
+				paramVal := f.Params[paramIdx]
+				if paramSec.ByRef {
+					// VAR-параметр – сохраняем как есть
+					g.registerVarParam(paramName, proc.NestingLevel, paramVal)
+				} else {
+					ptr := entry.NewGetElementPtr(frameType, frameAlloca,
+						constant.NewInt(types.I32, 0),
+						constant.NewInt(types.I32, int64(fieldOffset)))
+					entry.NewStore(paramVal, ptr)
+					g.registerVar(paramName, proc.NestingLevel, fieldOffset, frameType)
+					fieldOffset++
+				}
+				paramIdx++
 			}
 		}
 	}
+
+	// Генерация вложенных процедур
+	if proc.Declarations != nil {
+		for _, nestedProc := range proc.Declarations.Procedures {
+			g.generateProcedure(nestedProc, false)
+		}
+	}
+
+	// Генерация тела
 	for _, stmt := range proc.Body {
 		g.genStmt(stmt)
 	}
+
+	// Возврат значения
 	if proc.ReturnExpr != nil {
 		retVal := g.genExpr(proc.ReturnExpr)
 		g.curBlock.NewRet(retVal)
-	} else if retType == types.Void {
-		g.curBlock.NewRet(nil)
+	} else if retType != types.Void {
+		if resultAlloca == nil {
+			panic("missing return alloca")
+		}
+		retVal := g.curBlock.NewLoad(retType, resultAlloca)
+		g.curBlock.NewRet(retVal)
 	} else {
-		panic("missing return value")
+		g.curBlock.NewRet(nil)
 	}
 }
 
@@ -409,18 +645,11 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 	switch ex := e.(type) {
 	case *ast.NumberExpr:
 		if ex.IsReal {
-			val, err := strconv.ParseFloat(ex.Text, 64)
-			if err != nil {
-				panic("invalid real number: " + ex.Text)
-			}
+			val, _ := strconv.ParseFloat(ex.Text, 64)
 			return constant.NewFloat(types.Float, val)
-		} else {
-			val, err := strconv.ParseInt(ex.Text, 10, 32)
-			if err != nil {
-				panic("invalid integer number: " + ex.Text)
-			}
-			return constant.NewInt(types.I32, val)
 		}
+		val, _ := strconv.ParseInt(ex.Text, 10, 32)
+		return constant.NewInt(types.I32, val)
 	case *ast.BoolExpr:
 		if ex.Value {
 			return constant.NewInt(types.I1, 1)
@@ -512,10 +741,6 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 			}
 			return g.curBlock.NewOr(left, right)
 		case "IN":
-			if isReal {
-				panic("IN not allowed on REAL")
-			}
-			// обработка IN (как раньше)
 			elem := left
 			set := right
 			if elem.Type() == types.I1 {
@@ -532,9 +757,13 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 	case *ast.UnaryExpr:
 		sub := g.genExpr(ex.Expr)
 		if ex.Op == "-" {
+			if sub.Type() == types.Float {
+				zero := constant.NewFloat(types.Float, 0)
+				return g.curBlock.NewFSub(zero, sub)
+			}
 			intType, ok := sub.Type().(*types.IntType)
 			if !ok {
-				panic("unary minus on non-integer")
+				panic("unary minus on non-integer/non-float")
 			}
 			zero := constant.NewInt(intType, 0)
 			return g.curBlock.NewSub(zero, sub)
@@ -544,12 +773,15 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 		}
 		return sub
 	case *ast.DesignatorExpr:
-		name := ex.Base.Name
-		if val, ok := g.lookup(name); ok {
-			// Если это константа (целая или вещественная), возвращаем её напрямую
-			switch val.(type) {
-			case *constant.Int, *constant.Float:
-				return val
+		if len(ex.Selectors) == 0 {
+			name := ex.Base.Name
+			if val, ok := g.lookup(name); ok {
+				if _, ok := val.(*constant.Int); ok {
+					return val
+				}
+				if _, ok := val.(*constant.Float); ok {
+					return val
+				}
 			}
 		}
 		ptr := g.genDesignatorPtr(ex)
@@ -575,30 +807,21 @@ func (g *Generator) fieldIndex(structType *types.StructType, fieldName string) i
 }
 
 func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
-	name := d.Base.Name
-	if d.Base.Module != "" {
-		name = d.Base.Module + "." + d.Base.Name
-	}
-	baseVal, ok := g.lookup(name)
-	if !ok && d.Base.Module != "" {
-		moduleName := d.Base.Module
-		baseVal, ok = g.lookup(moduleName)
-		if ok {
-			newSelectors := make([]ast.Selector, 0, len(d.Selectors)+1)
-			newSelectors = append(newSelectors, ast.Selector{Field: d.Base.Name})
-			newSelectors = append(newSelectors, d.Selectors...)
-			newDes := &ast.DesignatorExpr{
-				Base:      ast.QualIdent{Name: moduleName},
-				Selectors: newSelectors,
-			}
-			return g.genDesignatorPtr(newDes)
+	var basePtr value.Value
+	if len(d.Selectors) == 0 && d.Base.Module == "" {
+		// Простая переменная: всегда получаем через getVarPtr
+		name := d.Base.Name
+		basePtr = g.getVarPtr(name)
+	} else {
+		// Сложный дизайнатор: начинаем с lookup (возможно, глобальный или функция)
+		name := d.Base.Name
+		baseVal, ok := g.lookup(name)
+		if !ok {
+			baseVal = g.getVarPtr(name)
 		}
+		basePtr = baseVal
 	}
-	if !ok {
-		panic("unknown identifier: " + name)
-	}
-	cur := baseVal
-
+	cur := basePtr
 	for _, sel := range d.Selectors {
 		if sel.Field != "" {
 			ptrType, ok := cur.Type().(*types.PointerType)
@@ -659,122 +882,127 @@ func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
 }
 
 func (g *Generator) genCall(c *ast.CallExpr) value.Value {
-	// Проверка на встроенные вызовы (по имени designator)
+	// Built-in functions
 	if des, ok := c.Callee.(*ast.DesignatorExpr); ok {
 		name := des.Base.Name
 		if des.Base.Module != "" {
 			name = des.Base.Module + "." + name
 		}
-		// Встроенные процедуры (не возвращают значение, возвращаем nil)
-		if name == "INC" && len(c.Args) == 1 {
-			arg := c.Args[0]
-			if des, ok := arg.(*ast.DesignatorExpr); ok {
-				ptr := g.genDesignatorPtr(des)
-				if ptrType, ok := ptr.Type().(*types.PointerType); ok {
-					load := g.curBlock.NewLoad(ptrType.ElemType, ptr)
-					if load.Type() != types.I32 {
-						panic("INC requires INTEGER variable")
+		switch name {
+		case "INC":
+			if len(c.Args) == 1 {
+				if des, ok := c.Args[0].(*ast.DesignatorExpr); ok {
+					ptr := g.genDesignatorPtr(des)
+					if ptrType, ok := ptr.Type().(*types.PointerType); ok {
+						load := g.curBlock.NewLoad(ptrType.ElemType, ptr)
+						one := constant.NewInt(types.I32, 1)
+						added := g.curBlock.NewAdd(load, one)
+						g.curBlock.NewStore(added, ptr)
+						return nil
 					}
-					one := constant.NewInt(types.I32, 1)
-					added := g.curBlock.NewAdd(load, one)
-					g.curBlock.NewStore(added, ptr)
-					return nil
 				}
+				panic("INC argument must be a variable")
 			}
-			panic("INC argument must be an INTEGER variable")
-		}
-		if name == "DEC" && len(c.Args) == 1 {
-			arg := c.Args[0]
-			if des, ok := arg.(*ast.DesignatorExpr); ok {
-				ptr := g.genDesignatorPtr(des)
-				if ptrType, ok := ptr.Type().(*types.PointerType); ok {
-					load := g.curBlock.NewLoad(ptrType.ElemType, ptr)
-					if load.Type() != types.I32 {
-						panic("DEC requires INTEGER variable")
+		case "DEC":
+			if len(c.Args) == 1 {
+				if des, ok := c.Args[0].(*ast.DesignatorExpr); ok {
+					ptr := g.genDesignatorPtr(des)
+					if ptrType, ok := ptr.Type().(*types.PointerType); ok {
+						load := g.curBlock.NewLoad(ptrType.ElemType, ptr)
+						one := constant.NewInt(types.I32, 1)
+						sub := g.curBlock.NewSub(load, one)
+						g.curBlock.NewStore(sub, ptr)
+						return nil
 					}
-					one := constant.NewInt(types.I32, 1)
-					sub := g.curBlock.NewSub(load, one)
-					g.curBlock.NewStore(sub, ptr)
-					return nil
 				}
+				panic("DEC argument must be a variable")
 			}
-			panic("DEC argument must be an INTEGER variable")
-		}
-		// Встроенные функции (возвращают значение)
-		if name == "ABS" && len(c.Args) == 1 {
-			arg := g.genExpr(c.Args[0])
-			if arg.Type() == types.I32 {
+		case "ABS":
+			if len(c.Args) == 1 {
+				arg := g.genExpr(c.Args[0])
+				if arg.Type() == types.I32 {
+					zero := constant.NewInt(types.I32, 0)
+					cmp := g.curBlock.NewICmp(enum.IPredSLT, arg, zero)
+					neg := g.curBlock.NewSub(zero, arg)
+					return g.curBlock.NewSelect(cmp, neg, arg)
+				} else if arg.Type() == types.Float {
+					zero := constant.NewFloat(types.Float, 0)
+					cmp := g.curBlock.NewFCmp(enum.FPredOLT, arg, zero)
+					neg := g.curBlock.NewFSub(zero, arg)
+					return g.curBlock.NewSelect(cmp, neg, arg)
+				}
+				panic("ABS: invalid argument type")
+			}
+		case "ODD":
+			if len(c.Args) == 1 {
+				arg := g.genExpr(c.Args[0])
+				if arg.Type() != types.I32 {
+					panic("ODD argument must be INTEGER")
+				}
+				one := constant.NewInt(types.I32, 1)
+				and := g.curBlock.NewAnd(arg, one)
 				zero := constant.NewInt(types.I32, 0)
-				cmp := g.curBlock.NewICmp(enum.IPredSLT, arg, zero)
-				neg := g.curBlock.NewSub(zero, arg)
-				return g.curBlock.NewSelect(cmp, neg, arg)
-			} else if arg.Type() == types.Float {
-				// вызов llvm.fabs.f64
-				fabsFunc := g.module.NewFunc("llvm.fabs.f64", types.Float, ir.NewParam("x", types.Float))
-				return g.curBlock.NewCall(fabsFunc, arg)
+				return g.curBlock.NewICmp(enum.IPredNE, and, zero)
 			}
-			panic("ABS: invalid argument type")
-		}
-		if name == "ODD" && len(c.Args) == 1 {
-			arg := g.genExpr(c.Args[0])
-			if arg.Type() != types.I32 {
-				panic("ODD argument must be INTEGER")
+		case "REAL":
+			if len(c.Args) == 1 {
+				arg := g.genExpr(c.Args[0])
+				if arg.Type() == types.I32 {
+					return g.curBlock.NewSIToFP(arg, types.Float)
+				}
+				panic("REAL argument must be INTEGER")
 			}
-			one := constant.NewInt(types.I32, 1)
-			and := g.curBlock.NewAnd(arg, one)
-			zero := constant.NewInt(types.I32, 0)
-			return g.curBlock.NewICmp(enum.IPredNE, and, zero)
-		}
-		if name == "REAL" && len(c.Args) == 1 {
-			arg := g.genExpr(c.Args[0])
-			if arg.Type() == types.I32 {
-				return g.curBlock.NewSIToFP(arg, types.Float)
-			}
-			panic("REAL argument must be INTEGER")
 		}
 	}
 
-	// Обычный вызов: поиск callee (пользовательская функция)
-	var callee value.Value
+	// Normal function call
+	var calleeVal value.Value
+	var calleeName string
 	if des, ok := c.Callee.(*ast.DesignatorExpr); ok {
-		name := des.Base.Name
+		calleeName = des.Base.Name
 		if des.Base.Module != "" {
-			name = des.Base.Module + "." + name
+			calleeName = des.Base.Module + "." + calleeName
 		}
 		var found bool
-		callee, found = g.lookup(name)
+		calleeVal, found = g.lookup(calleeName)
 		if !found {
 			for _, f := range g.module.Funcs {
-				if f.Name() == name {
-					callee = f
+				if f.Name() == calleeName {
+					calleeVal = f
 					found = true
 					break
 				}
 			}
 			if !found {
-				panic("unknown function: " + name)
+				panic("unknown function: " + calleeName)
 			}
 		}
 	} else {
-		callee = g.genExpr(c.Callee)
+		calleeVal = g.genExpr(c.Callee)
 	}
-	ptrType, ok := callee.Type().(*types.PointerType)
+	ptrType, ok := calleeVal.Type().(*types.PointerType)
 	if !ok {
-		panic(fmt.Sprintf("callee is not a pointer, type = %T", callee.Type()))
+		panic(fmt.Sprintf("callee is not a pointer, type = %T", calleeVal.Type()))
 	}
 	funcType, ok := ptrType.ElemType.(*types.FuncType)
 	if !ok {
 		panic(fmt.Sprintf("pointer does not point to function, elem type = %T", ptrType.ElemType))
 	}
-	args := make([]value.Value, len(c.Args))
-	for i, a := range c.Args {
-		expectedType := funcType.Params[i]
-		var argVal value.Value
+	args := []value.Value{}
 
-		// Если параметр – указатель (VAR параметр или открытый массив)
+	if info, ok := g.varInfo[calleeName]; ok && info.NestingLevel > 1 {
+		if g.framePtr == nil {
+			panic("no frame pointer for nested call")
+		}
+		framePtrAsI8 := g.curBlock.NewBitCast(g.framePtr, types.I8Ptr)
+		args = append(args, framePtrAsI8)
+	}
+
+	for i, a := range c.Args {
+		expectedType := funcType.Params[i+len(args)]
+		var argVal value.Value
 		if _, isPtr := expectedType.(*types.PointerType); isPtr {
 			if des, ok := a.(*ast.DesignatorExpr); ok {
-				// Передаём указатель на аргумент
 				argVal = g.genDesignatorPtr(des)
 			} else {
 				argVal = g.genExpr(a)
@@ -782,8 +1010,6 @@ func (g *Generator) genCall(c *ast.CallExpr) value.Value {
 		} else {
 			argVal = g.genExpr(a)
 		}
-
-		// Приведение типа
 		if argVal.Type() != expectedType {
 			if argVal.Type() == types.I1 && expectedType == types.I32 {
 				argVal = g.curBlock.NewZExt(argVal, types.I32)
@@ -791,14 +1017,27 @@ func (g *Generator) genCall(c *ast.CallExpr) value.Value {
 				argVal = g.curBlock.NewTrunc(argVal, types.I1)
 			}
 		}
-		args[i] = argVal
+		args = append(args, argVal)
 	}
-	return g.curBlock.NewCall(callee, args...)
+	return g.curBlock.NewCall(calleeVal, args...)
 }
 
 func (g *Generator) genStmt(s ast.Stmt) {
 	switch st := s.(type) {
 	case *ast.AssignmentStmt:
+		// Присваивание имени функции (возвращаемого значения)
+		if len(st.Target.Selectors) == 0 && st.Target.Base.Module == "" {
+			name := st.Target.Base.Name
+			if g.currentProc != nil && name == g.currentProc.Name.Name && g.currentRetType != types.Void {
+				val := g.genExpr(st.Value)
+				if g.currentResultAlloca == nil {
+					panic("no result alloca for function")
+				}
+				g.curBlock.NewStore(val, g.currentResultAlloca)
+				return
+			}
+		}
+		// Старое обычное присваивание (через указатель)
 		ptr := g.genDesignatorPtr(st.Target)
 		val := g.genExpr(st.Value)
 		g.curBlock.NewStore(val, ptr)
@@ -890,10 +1129,7 @@ func (g *Generator) genRepeatStmt(st *ast.RepeatStmt) {
 }
 
 func (g *Generator) genForStmt(st *ast.ForStmt) {
-	varPtr, ok := g.lookup(st.Var)
-	if !ok {
-		panic("for loop variable not found: " + st.Var)
-	}
+	varPtr := g.getVarPtr(st.Var)
 	fromVal := g.genExpr(st.From)
 	g.curBlock.NewStore(fromVal, varPtr)
 	condBlock := g.curFunc.NewBlock(g.nextBlockName("forcond"))
@@ -927,7 +1163,6 @@ func (g *Generator) genCaseStmt(stmt *ast.CaseStmt) {
 	selector := g.genExpr(stmt.Expr)
 	exitBlock := g.curFunc.NewBlock(g.nextBlockName("case_exit"))
 	var elseBlock *ir.Block = exitBlock
-
 	for _, branch := range stmt.Branches {
 		if len(branch.Labels) == 0 {
 			elseBlock = g.curFunc.NewBlock(g.nextBlockName("case_else"))
@@ -959,13 +1194,11 @@ func (g *Generator) genCaseStmt(stmt *ast.CaseStmt) {
 		thenBlock := g.curFunc.NewBlock(g.nextBlockName(fmt.Sprintf("case_body_%d", i)))
 		nextBlock := g.curFunc.NewBlock(g.nextBlockName(fmt.Sprintf("case_next_%d", i)))
 		g.curBlock.NewCondBr(cond, thenBlock, nextBlock)
-
 		g.curBlock = thenBlock
 		for _, s := range branch.Body {
 			g.genStmt(s)
 		}
 		g.curBlock.NewBr(exitBlock)
-
 		g.curBlock = nextBlock
 	}
 	if elseBlock != exitBlock {
@@ -992,82 +1225,11 @@ func (g *Generator) namedTypeToLLVM(typeName string) types.Type {
 		return types.I32
 	case "BOOLEAN":
 		return types.I1
+	case "REAL":
+		return types.Float
 	case "SET":
 		return types.I32
 	default:
 		return types.I32
-	}
-}
-
-func (g *Generator) isRealType(typ types.Type) bool {
-	return typ == types.Float
-}
-
-func (g *Generator) promoteToReal(val value.Value) value.Value {
-	if val.Type() == types.I32 {
-		return g.curBlock.NewSIToFP(val, types.Float)
-	}
-	return val
-}
-
-// Константное вычисление (без LLVM IR)
-func (g *Generator) constEval(e ast.Expr) (isReal bool, intVal int64, realVal float64) {
-	switch ex := e.(type) {
-	case *ast.NumberExpr:
-		if ex.IsReal {
-			val, _ := strconv.ParseFloat(ex.Text, 64)
-			return true, 0, val
-		} else {
-			val, _ := strconv.ParseInt(ex.Text, 10, 64)
-			return false, val, 0
-		}
-	case *ast.BinaryExpr:
-		isRealL, intL, realL := g.constEval(ex.Left)
-		isRealR, intR, realR := g.constEval(ex.Right)
-		if isRealL || isRealR {
-			l := realL
-			if !isRealL {
-				l = float64(intL)
-			}
-			r := realR
-			if !isRealR {
-				r = float64(intR)
-			}
-			var res float64
-			switch ex.Op {
-			case "+":
-				res = l + r
-			case "-":
-				res = l - r
-			case "*":
-				res = l * r
-			case "/":
-				res = l / r
-			default:
-				panic("unsupported real const op")
-			}
-			return true, 0, res
-		} else {
-			var res int64
-			switch ex.Op {
-			case "+":
-				res = intL + intR
-			case "-":
-				res = intL - intR
-			case "*":
-				res = intL * intR
-			case "/":
-				res = intL / intR
-			case "DIV":
-				res = intL / intR
-			case "MOD":
-				res = intL % intR
-			default:
-				panic("unsupported integer const op")
-			}
-			return false, res, 0
-		}
-	default:
-		panic("non-constant expression in const declaration")
 	}
 }

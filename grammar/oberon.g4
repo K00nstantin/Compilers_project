@@ -327,7 +327,21 @@ UNTIL   : 'UNTIL';
 FOR     : 'FOR';
 BY      : 'BY';
 BEGIN   : 'BEGIN';
-RETURN  : 'RETURN';
+RETURN  : 'RETURN';MODULE TestSet6;
+  VAR a, b, c: SET;
+      ok: BOOLEAN;
+      result: INTEGER;
+BEGIN
+  a := {1,2,3};
+  b := {2,3,4};
+  c := (a + b) * {2,3,4,5};
+  ok := (c = {2,3,4}) & (a - b = {1}) & (a / b = {1,4});
+  IF ok THEN
+    result := 0
+  ELSE
+    result := 1
+  END
+END TestSet6.
 CONST   : 'CONST';
 TYPE    : 'TYPE';
 VAR     : 'VAR';

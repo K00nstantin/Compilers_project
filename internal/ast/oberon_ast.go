@@ -47,6 +47,8 @@ type ProcedureDecl struct {
 	Body         []Stmt
 	ReturnExpr   Expr
 	EndName      string
+	NestingLevel int            // 0 – модуль, 1 – вложенная в модуль, и т.д.
+	Parent       *ProcedureDecl // внешняя процедура (nil для уровня модуля)
 }
 
 type ProcedureSignature struct {

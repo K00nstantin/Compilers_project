@@ -1,9 +1,17 @@
-MODULE TestReal;
-  CONST pi = 3.14159;
-  VAR r: REAL; i: INTEGER; ok: BOOLEAN; result: INTEGER;
+MODULE TestFibonacci;
+  VAR result: INTEGER;
+  PROCEDURE Fib(n: INTEGER): INTEGER;
+  BEGIN
+    IF n <= 1 THEN
+      Fib := n
+    ELSE
+      Fib := Fib(n-1) + Fib(n-2)
+    END
+  END Fib;
 BEGIN
-  i := 2;
-  r := pi * i;     (* 6.28318 *)
-  ok := (r > 6.0) & (r < 7.0);
-  IF ok THEN result := 0 ELSE result := 1 END
-END TestReal.
+  IF Fib(10) = 55 THEN
+    result := 0
+  ELSE
+    result := 1
+  END
+END TestFibonacci.

@@ -1,41 +1,63 @@
-source_filename = "TestReal.mod"
+source_filename = "TestFibonacci.mod"
 
-@r = global float zeroinitializer
-@i = global i32 zeroinitializer
-@ok = global i1 zeroinitializer
 @result = global i32 zeroinitializer
 
-define void @__init_TestReal() {
+define i32 @Fib(i32 %0) {
 entry:
-	store i32 2, i32* @i
-	%0 = load i32, i32* @i
-	%1 = sitofp i32 %0 to float
-	%2 = fmul float 0x400921F9E0000000, %1
-	store float %2, float* @r
-	%3 = load float, float* @r
-	%4 = fcmp ogt float %3, 6.0
-	%5 = load float, float* @r
-	%6 = fcmp olt float %5, 7.0
-	%7 = and i1 %4, %6
-	store i1 %7, i1* @ok
-	%8 = load i1, i1* @ok
-	br i1 %8, label %ifthen_0_3, label %ifelse_2
+	%1 = alloca { i32 }
+	%2 = alloca i32
+	%3 = getelementptr { i32 }, { i32 }* %1, i32 0, i32 0
+	store i32 %0, i32* %3
+	%4 = getelementptr { i32 }, { i32 }* %1, i32 0, i32 0
+	%5 = load i32, i32* %4
+	%6 = icmp sle i32 %5, 1
+	br i1 %6, label %ifthen_0_3, label %ifelse_2
 
 ifmerge_1:
-	ret void
+	%7 = load i32, i32* %2
+	ret i32 %7
 
 ifelse_2:
-	store i32 1, i32* @result
+	%8 = getelementptr { i32 }, { i32 }* %1, i32 0, i32 0
+	%9 = load i32, i32* %8
+	%10 = sub i32 %9, 1
+	%11 = call i32 @Fib(i32 %10)
+	%12 = getelementptr { i32 }, { i32 }* %1, i32 0, i32 0
+	%13 = load i32, i32* %12
+	%14 = sub i32 %13, 2
+	%15 = call i32 @Fib(i32 %14)
+	%16 = add i32 %11, %15
+	store i32 %16, i32* %2
 	br label %ifmerge_1
 
 ifthen_0_3:
-	store i32 0, i32* @result
+	%17 = getelementptr { i32 }, { i32 }* %1, i32 0, i32 0
+	%18 = load i32, i32* %17
+	store i32 %18, i32* %2
 	br label %ifmerge_1
+}
+
+define void @__init_TestFibonacci() {
+entry:
+	%0 = call i32 @Fib(i32 10)
+	%1 = icmp eq i32 %0, 55
+	br i1 %1, label %ifthen_0_6, label %ifelse_5
+
+ifmerge_4:
+	ret void
+
+ifelse_5:
+	store i32 1, i32* @result
+	br label %ifmerge_4
+
+ifthen_0_6:
+	store i32 0, i32* @result
+	br label %ifmerge_4
 }
 
 define i32 @main() {
 entry:
-	call void @__init_TestReal()
+	call void @__init_TestFibonacci()
 	%0 = load i32, i32* @result
 	ret i32 %0
 }

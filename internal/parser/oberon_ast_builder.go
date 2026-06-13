@@ -7,10 +7,18 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 )
 
-type ASTBuilder struct{ *BaseoberonVisitor }
+type ASTBuilder struct {
+	*BaseoberonVisitor
+	nestingLevel int
+	currentProc  *ast.ProcedureDecl
+}
 
 func NewASTBuilder() *ASTBuilder {
-	return &ASTBuilder{BaseoberonVisitor: &BaseoberonVisitor{BaseParseTreeVisitor: &antlr.BaseParseTreeVisitor{}}}
+	return &ASTBuilder{
+		BaseoberonVisitor: &BaseoberonVisitor{BaseParseTreeVisitor: &antlr.BaseParseTreeVisitor{}},
+		nestingLevel:      0,
+		currentProc:       nil,
+	}
 }
 
 var _ oberonVisitor = (*ASTBuilder)(nil)
@@ -122,6 +130,14 @@ func (v *ASTBuilder) VisitVariableDeclaration(ctx *VariableDeclarationContext) i
 
 func (v *ASTBuilder) VisitProcedureDeclaration(ctx *ProcedureDeclarationContext) interface{} {
 	head := v.Visit(ctx.ProcedureHeading()).(*ast.ProcedureDecl)
+	// Уровень = текущий уровень + 1
+	head.NestingLevel = v.nestingLevel + 1
+	head.Parent = v.currentProc
+
+	v.nestingLevel++
+	oldProc := v.currentProc
+	v.currentProc = head
+
 	body := v.Visit(ctx.ProcedureBody()).(*ast.ProcedureDecl)
 	head.Declarations = body.Declarations
 	head.Body = body.Body
@@ -129,6 +145,9 @@ func (v *ASTBuilder) VisitProcedureDeclaration(ctx *ProcedureDeclarationContext)
 	if endName := ctx.Ident(); endName != nil {
 		head.EndName = endName.GetText()
 	}
+
+	v.nestingLevel--
+	v.currentProc = oldProc
 	return head
 }
 
@@ -525,7 +544,7 @@ func (v *ASTBuilder) VisitLabelRange(ctx *LabelRangeContext) interface{} {
 
 func (v *ASTBuilder) VisitLabel(ctx *LabelContext) interface{} {
 	if tok := ctx.INTEGER(); tok != nil {
-		return &ast.NumberExpr{Text: tok.GetText()}
+		return &ast.NumberExpr{Text: tok.GetText(), IsReal: false}
 	}
 	return &ast.NumberExpr{Text: ctx.GetText()}
 }
