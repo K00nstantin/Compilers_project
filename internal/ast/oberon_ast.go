@@ -252,3 +252,10 @@ type DesignatorExpr struct {
 }
 
 func (*DesignatorExpr) exprNode() {}
+
+type IsExpr struct {
+	Expr     Expr   // левая часть (выражение)
+	TypeName string // полное имя типа (например, "Point" или "Module.Point")
+}
+
+func (*IsExpr) exprNode() {}

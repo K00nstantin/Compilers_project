@@ -13,20 +13,23 @@ import (
 )
 
 type Generator struct {
-	module              *ir.Module
-	moduleName          string
-	curBlock            *ir.Block
-	curFunc             *ir.Func
-	symStack            []map[string]value.Value
-	fieldNameToIndex    map[*types.StructType]map[string]int
-	recordTypes         map[string]*ast.RecordType
-	blockCounter        int
-	currentProc         *ast.ProcedureDecl
-	framePtr            value.Value
-	varInfo             map[string]VarInfo
-	procFrames          map[*ast.ProcedureDecl]*types.StructType
-	currentResultAlloca value.Value // alloca для возвращаемого значения текущей функции
-	currentRetType      types.Type  // тип возврата текущей функции
+	module           *ir.Module
+	moduleName       string
+	curBlock         *ir.Block
+	curFunc          *ir.Func
+	symStack         []map[string]value.Value
+	fieldNameToIndex map[*types.StructType]map[string]int
+	recordTypes      map[string]*ast.RecordType
+	blockCounter     int
+	// для вложенных процедур
+	currentProc *ast.ProcedureDecl
+	framePtr    value.Value
+	varInfo     map[string]VarInfo
+	procFrames  map[*ast.ProcedureDecl]*types.StructType
+	// для поддержки IS (статическая иерархия)
+	parentTags          map[string]string // имя типа -> имя родителя
+	currentResultAlloca value.Value
+	currentRetType      types.Type
 }
 
 type VarInfo struct {
@@ -35,22 +38,26 @@ type VarInfo struct {
 	FrameType    *types.StructType
 	IsGlobal     bool
 	GlobalValue  value.Value
+	TypeName     string // имя типа записи (если переменная имеет тип запись)
 }
 
 func NewGenerator(moduleName string) *Generator {
 	m := ir.NewModule()
 	m.SourceFilename = moduleName + ".mod"
 	g := &Generator{
-		module:           m,
-		moduleName:       moduleName,
-		curBlock:         nil,
-		curFunc:          nil,
-		symStack:         []map[string]value.Value{},
-		fieldNameToIndex: make(map[*types.StructType]map[string]int),
-		recordTypes:      make(map[string]*ast.RecordType),
-		blockCounter:     0,
-		varInfo:          make(map[string]VarInfo),
-		procFrames:       make(map[*ast.ProcedureDecl]*types.StructType),
+		module:              m,
+		moduleName:          moduleName,
+		curBlock:            nil,
+		curFunc:             nil,
+		symStack:            []map[string]value.Value{},
+		fieldNameToIndex:    make(map[*types.StructType]map[string]int),
+		recordTypes:         make(map[string]*ast.RecordType),
+		blockCounter:        0,
+		varInfo:             make(map[string]VarInfo),
+		procFrames:          make(map[*ast.ProcedureDecl]*types.StructType),
+		parentTags:          make(map[string]string),
+		currentResultAlloca: nil,
+		currentRetType:      nil,
 	}
 	g.pushScope()
 	return g
@@ -92,7 +99,6 @@ func (g *Generator) buildFrameType(proc *ast.ProcedureDecl) *types.StructType {
 		return t
 	}
 	var fields []types.Type
-	// static link only for nesting level >= 2
 	if proc.NestingLevel > 1 {
 		fields = append(fields, types.I8Ptr)
 	}
@@ -133,7 +139,6 @@ func (g *Generator) registerVarParam(name string, nestingLevel int, val value.Va
 		NestingLevel: nestingLevel,
 		FrameOffset:  -1,
 		GlobalValue:  val,
-		IsGlobal:     false,
 	}
 }
 
@@ -152,7 +157,6 @@ func (g *Generator) getVarPtr(name string) value.Value {
 		return info.GlobalValue
 	}
 	if info.FrameOffset == -1 {
-		// VAR-параметр или переданный указатель
 		return info.GlobalValue
 	}
 	if info.NestingLevel == g.currentProc.NestingLevel {
@@ -162,7 +166,6 @@ func (g *Generator) getVarPtr(name string) value.Value {
 			constant.NewInt(types.I32, int64(info.FrameOffset)))
 		return ptr
 	}
-	// Нелокальная переменная: поднимаемся по статическим ссылкам
 	curProc := g.currentProc
 	frame := g.framePtr
 	for curProc.NestingLevel > info.NestingLevel {
@@ -181,6 +184,15 @@ func (g *Generator) getVarPtr(name string) value.Value {
 		constant.NewInt(types.I32, 0),
 		constant.NewInt(types.I32, int64(info.FrameOffset)))
 	return ptr
+}
+
+// Заполнение иерархии типов записей
+func (g *Generator) buildTypeHierarchy() {
+	for name, rec := range g.recordTypes {
+		if rec.Base != "" {
+			g.parentTags[name] = rec.Base
+		}
+	}
 }
 
 func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
@@ -241,6 +253,25 @@ func (g *Generator) oberonTypeToLLVM(t ast.TypeExpr) types.Type {
 		return structType
 	case *ast.PointerType:
 		return types.NewPointer(g.oberonTypeToLLVM(tt.Target))
+	case *ast.ProcedureType:
+		var paramTypes []types.Type
+		if tt.Signature != nil {
+			for _, paramSec := range tt.Signature.Params {
+				paramType := g.oberonTypeToLLVM(paramSec.Type)
+				if paramSec.ByRef {
+					paramType = types.NewPointer(paramType)
+				}
+				for range paramSec.Names {
+					paramTypes = append(paramTypes, paramType)
+				}
+			}
+		}
+		var retType types.Type = types.Void
+		if tt.Signature != nil && tt.Signature.ReturnType != "" {
+			retType = g.namedTypeToLLVM(tt.Signature.ReturnType)
+		}
+		funcType := types.NewFunc(retType, paramTypes...)
+		return types.NewPointer(funcType)
 	default:
 		panic(fmt.Sprintf("unknown type: %T", t))
 	}
@@ -409,6 +440,7 @@ func (g *Generator) genSetExpr(s *ast.SetExpr) value.Value {
 
 func (g *Generator) Generate(astMod *ast.Module) *ir.Module {
 	g.processDeclarations(astMod.Declarations, true)
+	g.buildTypeHierarchy() // заполняем parentTags
 	g.generateModuleInit(astMod.Body)
 	g.generateMain()
 	return g.module
@@ -435,6 +467,12 @@ func (g *Generator) processDeclarations(decls *ast.DeclarationBlock, isGlobal bo
 		llvmType := g.oberonTypeToLLVM(v.Type)
 		for _, nameDef := range v.Names {
 			name := nameDef.Name
+			typeName := ""
+			if named, ok := v.Type.(*ast.NamedType); ok {
+				if _, isRecord := g.recordTypes[named.Name]; isRecord {
+					typeName = named.Name
+				}
+			}
 			if isGlobal {
 				global := g.module.NewGlobal(name, llvmType)
 				global.Init = constant.NewZeroInitializer(llvmType)
@@ -442,7 +480,7 @@ func (g *Generator) processDeclarations(decls *ast.DeclarationBlock, isGlobal bo
 					global.Linkage = enum.LinkageExternal
 				}
 				g.addSymbol(name, global)
-				g.varInfo[name] = VarInfo{IsGlobal: true, GlobalValue: global}
+				g.varInfo[name] = VarInfo{IsGlobal: true, GlobalValue: global, TypeName: typeName}
 			}
 		}
 	}
@@ -487,15 +525,15 @@ func (g *Generator) generateProcedure(proc *ast.ProcedureDecl, isGlobal bool) {
 	oldFunc := g.curFunc
 	oldBlock := g.curBlock
 	oldFramePtr := g.framePtr
-	oldResultAlloca := g.currentResultAlloca // NEW
-	oldRetType := g.currentRetType           // NEW
+	oldResultAlloca := g.currentResultAlloca
+	oldRetType := g.currentRetType
 	defer func() {
 		g.curFunc = oldFunc
 		g.curBlock = oldBlock
 		g.framePtr = oldFramePtr
 		g.currentProc = oldProc
-		g.currentResultAlloca = oldResultAlloca // NEW
-		g.currentRetType = oldRetType           // NEW
+		g.currentResultAlloca = oldResultAlloca
+		g.currentRetType = oldRetType
 	}()
 	g.curFunc = f
 	entry := f.NewBlock("entry")
@@ -516,25 +554,33 @@ func (g *Generator) generateProcedure(proc *ast.ProcedureDecl, isGlobal bool) {
 		fieldOffset = 1
 	}
 
-	// Создаём alloca для возвращаемого значения (если функция)
+	// alloca для возвращаемого значения (если функция)
 	var resultAlloca value.Value = nil
 	if retType != types.Void {
 		resultAlloca = entry.NewAlloca(retType)
-		// Не добавляем в symStack, чтобы не мешать вызовам функции
 	}
-	g.currentResultAlloca = resultAlloca // NEW
-	g.currentRetType = retType           // NEW
+	g.currentResultAlloca = resultAlloca
+	g.currentRetType = retType
 
 	// Локальные переменные
 	if proc.Declarations != nil {
 		for _, v := range proc.Declarations.Vars {
 			varType := g.oberonTypeToLLVM(v.Type)
+			typeName := ""
+			if named, ok := v.Type.(*ast.NamedType); ok {
+				if _, isRecord := g.recordTypes[named.Name]; isRecord {
+					typeName = named.Name
+				}
+			}
 			for _, nameDef := range v.Names {
 				ptr := entry.NewGetElementPtr(frameType, frameAlloca,
 					constant.NewInt(types.I32, 0),
 					constant.NewInt(types.I32, int64(fieldOffset)))
 				entry.NewStore(constant.NewZeroInitializer(varType), ptr)
 				g.registerVar(nameDef.Name, proc.NestingLevel, fieldOffset, frameType)
+				info := g.varInfo[nameDef.Name]
+				info.TypeName = typeName
+				g.varInfo[nameDef.Name] = info
 				fieldOffset++
 			}
 		}
@@ -550,7 +596,6 @@ func (g *Generator) generateProcedure(proc *ast.ProcedureDecl, isGlobal bool) {
 			for _, paramName := range paramSec.Names {
 				paramVal := f.Params[paramIdx]
 				if paramSec.ByRef {
-					// VAR-параметр – сохраняем как есть
 					g.registerVarParam(paramName, proc.NestingLevel, paramVal)
 				} else {
 					ptr := entry.NewGetElementPtr(frameType, frameAlloca,
@@ -572,12 +617,12 @@ func (g *Generator) generateProcedure(proc *ast.ProcedureDecl, isGlobal bool) {
 		}
 	}
 
-	// Генерация тела
+	// Тело
 	for _, stmt := range proc.Body {
 		g.genStmt(stmt)
 	}
 
-	// Возврат значения
+	// Return
 	if proc.ReturnExpr != nil {
 		retVal := g.genExpr(proc.ReturnExpr)
 		g.curBlock.NewRet(retVal)
@@ -772,6 +817,8 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 			return g.curBlock.NewXor(one, sub)
 		}
 		return sub
+	case *ast.IsExpr:
+		return g.genIsExpr(ex)
 	case *ast.DesignatorExpr:
 		if len(ex.Selectors) == 0 {
 			name := ex.Base.Name
@@ -780,6 +827,9 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 					return val
 				}
 				if _, ok := val.(*constant.Float); ok {
+					return val
+				}
+				if _, ok := val.(*ir.Func); ok {
 					return val
 				}
 			}
@@ -797,6 +847,33 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 	}
 }
 
+// Статическая проверка IS
+func (g *Generator) genIsExpr(e *ast.IsExpr) value.Value {
+	// Пытаемся получить статический тип левого выражения
+	var leftTypeName string
+	if des, ok := e.Expr.(*ast.DesignatorExpr); ok && len(des.Selectors) == 0 {
+		name := des.Base.Name
+		if info, ok := g.varInfo[name]; ok && info.TypeName != "" {
+			leftTypeName = info.TypeName
+		}
+	}
+	if leftTypeName == "" {
+		// Не удалось определить тип – возвращаем false
+		fmt.Println("Warning: IS applied to non-record or complex expression, returning false")
+		return constant.NewInt(types.I1, 0)
+	}
+	targetType := e.TypeName
+	// Проверяем, является ли leftTypeName подтипом targetType
+	cur := leftTypeName
+	for cur != "" {
+		if cur == targetType {
+			return constant.NewInt(types.I1, 1)
+		}
+		cur = g.parentTags[cur]
+	}
+	return constant.NewInt(types.I1, 0)
+}
+
 func (g *Generator) fieldIndex(structType *types.StructType, fieldName string) int {
 	if m, ok := g.fieldNameToIndex[structType]; ok {
 		if idx, ok := m[fieldName]; ok {
@@ -807,13 +884,19 @@ func (g *Generator) fieldIndex(structType *types.StructType, fieldName string) i
 }
 
 func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
+	// Исправление: если Base.Module != "" и нет селекторов, то это поле записи, ошибочно распарсенное как qualident
+	if d.Base.Module != "" && len(d.Selectors) == 0 {
+		newDes := &ast.DesignatorExpr{
+			Base:      ast.QualIdent{Name: d.Base.Module},
+			Selectors: []ast.Selector{{Field: d.Base.Name}},
+		}
+		return g.genDesignatorPtr(newDes)
+	}
 	var basePtr value.Value
 	if len(d.Selectors) == 0 && d.Base.Module == "" {
-		// Простая переменная: всегда получаем через getVarPtr
 		name := d.Base.Name
 		basePtr = g.getVarPtr(name)
 	} else {
-		// Сложный дизайнатор: начинаем с lookup (возможно, глобальный или функция)
 		name := d.Base.Name
 		baseVal, ok := g.lookup(name)
 		if !ok {
@@ -838,11 +921,10 @@ func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
 				constant.NewInt(types.I32, int64(fieldIdx)))
 			cur = gep
 		} else if len(sel.Index) > 0 {
-			ptrType, ok := cur.Type().(*types.PointerType)
-			if !ok {
+			if _, ok := cur.Type().(*types.PointerType); !ok {
 				panic("index access on non-pointer")
 			}
-			elemType := ptrType.ElemType
+			elemType := cur.Type().(*types.PointerType).ElemType
 			indices := []value.Value{}
 			if _, isArray := elemType.(*types.ArrayType); isArray {
 				indices = append(indices, constant.NewInt(types.I32, 0))
@@ -868,7 +950,7 @@ func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
 					break
 				}
 			}
-			gep := g.curBlock.NewGetElementPtr(ptrType.ElemType, cur, indices...)
+			gep := g.curBlock.NewGetElementPtr(cur.Type().(*types.PointerType).ElemType, cur, indices...)
 			cur = gep
 		} else if sel.Deref {
 			ptrType, ok := cur.Type().(*types.PointerType)
@@ -882,7 +964,7 @@ func (g *Generator) genDesignatorPtr(d *ast.DesignatorExpr) value.Value {
 }
 
 func (g *Generator) genCall(c *ast.CallExpr) value.Value {
-	// Built-in functions
+	// Встроенные функции
 	if des, ok := c.Callee.(*ast.DesignatorExpr); ok {
 		name := des.Base.Name
 		if des.Base.Module != "" {
@@ -955,7 +1037,7 @@ func (g *Generator) genCall(c *ast.CallExpr) value.Value {
 		}
 	}
 
-	// Normal function call
+	// Обычный вызов
 	var calleeVal value.Value
 	var calleeName string
 	if des, ok := c.Callee.(*ast.DesignatorExpr); ok {
@@ -1037,7 +1119,6 @@ func (g *Generator) genStmt(s ast.Stmt) {
 				return
 			}
 		}
-		// Старое обычное присваивание (через указатель)
 		ptr := g.genDesignatorPtr(st.Target)
 		val := g.genExpr(st.Value)
 		g.curBlock.NewStore(val, ptr)

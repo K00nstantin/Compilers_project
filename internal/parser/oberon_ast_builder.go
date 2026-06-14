@@ -463,6 +463,12 @@ func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
 	if len(all) < 2 {
 		panic("relation present but no right simple expression")
 	}
+	rel := ctx.Relation().GetText()
+	if rel == "IS" {
+		// Правый операнд – имя типа (qualident)
+		rightText := all[1].GetText()
+		return &ast.IsExpr{Expr: left, TypeName: rightText}
+	}
 	rightVal := v.Visit(all[1])
 	if rightVal == nil {
 		panic("right simple expression returned nil")
@@ -471,7 +477,6 @@ func (v *ASTBuilder) VisitExpression(ctx *ExpressionContext) interface{} {
 	if !ok {
 		panic(fmt.Sprintf("right simple expression is not Expr: %T", rightVal))
 	}
-	rel := ctx.Relation().GetText()
 	return &ast.BinaryExpr{Left: left, Op: rel, Right: right}
 }
 

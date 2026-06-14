@@ -1,17 +1,18 @@
-MODULE TestFibonacci;
-  VAR result: INTEGER;
-  PROCEDURE Fib(n: INTEGER): INTEGER;
+MODULE TestIs;
+  TYPE
+    Point = RECORD x, y: INTEGER END;
+    Point3D = RECORD (Point) z: INTEGER END;
+  VAR p3: Point3D;
+      result: INTEGER;
+  PROCEDURE Check;
   BEGIN
-    IF n <= 1 THEN
-      Fib := n
+    p3.z := 5;
+    IF (p3 IS Point3D) THEN
+      result := 0
     ELSE
-      Fib := Fib(n-1) + Fib(n-2)
+      result := 1
     END
-  END Fib;
+  END Check;
 BEGIN
-  IF Fib(10) = 55 THEN
-    result := 0
-  ELSE
-    result := 1
-  END
-END TestFibonacci.
+  Check
+END TestIs.
