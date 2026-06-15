@@ -549,7 +549,7 @@ func (v *ASTBuilder) VisitLabelRange(ctx *LabelRangeContext) interface{} {
 
 func (v *ASTBuilder) VisitLabel(ctx *LabelContext) interface{} {
 	if tok := ctx.INTEGER(); tok != nil {
-		return &ast.NumberExpr{Text: tok.GetText(), IsReal: false}
+		return &ast.NumberExpr{Text: tok.GetText(), IsReal: false, IsHex: false}
 	}
 	return &ast.NumberExpr{Text: ctx.GetText()}
 }
@@ -670,12 +670,13 @@ func (v *ASTBuilder) VisitFactor(ctx *FactorContext) interface{} {
 	case ctx.Number() != nil:
 		numCtx := ctx.Number()
 		if numCtx.INTEGER() != nil {
-			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false}
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false, IsHex: false}
 		} else if numCtx.REAL() != nil {
-			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: true}
-		} else {
-			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false}
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: true, IsHex: false}
+		} else if numCtx.HEXNUMBER() != nil {
+			return &ast.NumberExpr{Text: numCtx.GetText(), IsReal: false, IsHex: true}
 		}
+		panic("unknown number type")
 	case ctx.STRING() != nil:
 		return &ast.StringExpr{Value: ctx.STRING().GetText()}
 	case ctx.NIL() != nil:

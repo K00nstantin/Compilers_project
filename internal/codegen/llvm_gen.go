@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/K00nstantin/Compilers_project/internal/ast"
 	"github.com/llir/llvm/ir"
@@ -692,9 +693,17 @@ func (g *Generator) genExpr(e ast.Expr) value.Value {
 		if ex.IsReal {
 			val, _ := strconv.ParseFloat(ex.Text, 64)
 			return constant.NewFloat(types.Float, val)
+		} else if ex.IsHex {
+			hexStr := strings.TrimSuffix(strings.TrimSuffix(ex.Text, "H"), "h")
+			val, err := strconv.ParseInt(hexStr, 16, 32)
+			if err != nil {
+				panic("invalid hex number: " + ex.Text)
+			}
+			return constant.NewInt(types.I32, val)
+		} else {
+			val, _ := strconv.ParseInt(ex.Text, 10, 32)
+			return constant.NewInt(types.I32, val)
 		}
-		val, _ := strconv.ParseInt(ex.Text, 10, 32)
-		return constant.NewInt(types.I32, val)
 	case *ast.BoolExpr:
 		if ex.Value {
 			return constant.NewInt(types.I1, 1)

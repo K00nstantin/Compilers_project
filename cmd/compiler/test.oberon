@@ -1,18 +1,19 @@
-MODULE TestIs;
-  TYPE
-    Point = RECORD x, y: INTEGER END;
-    Point3D = RECORD (Point) z: INTEGER END;
-  VAR p3: Point3D;
-      result: INTEGER;
-  PROCEDURE Check;
+MODULE Factorial;
+  VAR result: INTEGER;
+
+  PROCEDURE Fact(n: INTEGER): INTEGER;
   BEGIN
-    p3.z := 5;
-    IF (p3 IS Point3D) THEN
-      result := 0
+    IF n <= 1 THEN
+      Fact := 1
     ELSE
-      result := 1
+      Fact := n * Fact(n - 1)
     END
-  END Check;
+  END Fact;
+
 BEGIN
-  Check
-END TestIs.
+  IF Fact(5) = 120 THEN
+    result := 0
+  ELSE
+    result := 1
+  END
+END Factorial.

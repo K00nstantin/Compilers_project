@@ -196,6 +196,7 @@ func (*UnaryExpr) exprNode() {}
 type NumberExpr struct {
 	Text   string
 	IsReal bool
+	IsHex  bool
 }
 
 func (*NumberExpr) exprNode() {}
